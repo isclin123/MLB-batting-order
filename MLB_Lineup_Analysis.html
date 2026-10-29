@@ -262,10 +262,11 @@ div.tocify {
 <div id="project-entry-point-and-current-scope" class="section level1" number="1">
 <h1 number="1"><span class="header-section-number">1</span> Project Entry Point and Current Scope</h1>
 <p>This Rmd is the single analysis entry point for the project. All subsequent lineup classification, exploratory analysis, statistical tests, and simulations will be added here rather than maintained in separate analysis scripts. The current version provides reproducible preprocessing of the three source datasets. Final lineup labels and between-group tests have not yet been produced. All prose, comments, and messages in this document must remain in English.</p>
+<p><strong>Key finding for scope review:</strong> applying the scope’s Traditional and OPS-ranked rules exactly as written to the confirmed 2025 sample produces an empty Traditional group and a single OPS-ranked game, so the planned two-group comparison cannot be run as specified. The section <em>Strict Application of the Scope’s Classification Rules</em> near the end reports the counts, tests alternative readings, and explains the cause.</p>
 <p>The confirmed primary sample uses 2025 outcomes and 2024 official player metrics. All nine starters must have at least 100 PA in 2024, with the same threshold applied to all five teams. Only innings 1-9 and complete half-innings before the first batting-roster substitution are eligible. Missing player metrics are not imputed. Earlier multi-season tables below document source auditing; they are not pooled into the primary sample. The final single-season section and its exports are the handoff for classification.</p>
 <p>The original Excel files remain unchanged. Each Knit reads the source files from this directory, writes derived data to <code>processed/</code>, and writes quality checks to <code>quality/</code>. Derived files with the same names are regenerated on each run. Original fields, Excel row numbers, correction provenance, and issue flags are retained. Unverified information is not imputed by guesswork.</p>
-<p>Open this file in RStudio and click <strong>Knit</strong>, or run the following command from the project root:</p>
-<pre class="r"><code>rmarkdown::render(&quot;MLB/MLB_Lineup_Analysis.Rmd&quot;)</code></pre>
+<p>Open this file in RStudio and click <strong>Knit</strong>, or run the following command from the folder that contains this file:</p>
+<pre class="r"><code>rmarkdown::render(&quot;MLB_Lineup_Analysis.Rmd&quot;)</code></pre>
 <pre class="r"><code>required &lt;- c(&quot;readxl&quot;, &quot;dplyr&quot;, &quot;tidyr&quot;, &quot;stringi&quot;, &quot;jsonlite&quot;, &quot;knitr&quot;, &quot;rmarkdown&quot;)
 missing_packages &lt;- required[!vapply(required, requireNamespace, logical(1), quietly = TRUE)]
 if (length(missing_packages)) stop(&quot;Install the following packages first: &quot;, paste(missing_packages, collapse = &quot;, &quot;))
@@ -3543,7 +3544,7 @@ stopifnot(identical(ready_saved, classification_bundle))</code></pre>
 <h1 number="12"><span class="header-section-number">12</span> Subsequent Analysis: Continue Updating This File</h1>
 <ol style="list-style-type: decimal">
 <li>Data preparation for the confirmed five-team 2025 sample is complete. Stop before classification, as requested.</li>
-<li>Before assigning labels, confirm any unresolved judgment calls about tied metrics or exact versus approximate matching. Do not tune classification rules using inning runs.</li>
+<li>The strict application of the scope’s rules later in this document leaves the Traditional group empty. Before any labels are assigned, the project team must decide whether to compare the strategies by simulation or to redefine the observational groups. Do not tune classification rules using inning runs.</li>
 <li>Follow page 2 of the revised scope to construct the Traditional order: highest OBP, next-highest OBP, highest remaining OPS, highest remaining SLG, and highest remaining OPS. Sort the remaining four hitters by OPS. The OPS strategy reorders only the same first five hitters and leaves the last four unchanged.</li>
 <li>Preserve both/neither/unknown cases rather than forcing every observation into one of two strategies. Report classification coverage before comparing outcomes.</li>
 <li>Account for within-game dependence when comparing runs per half-inning by clustering on game_id. Interpret observational comparisons separately from simulations that reorder the same roster.</li>
@@ -3704,10 +3705,1228 @@ knitr::kable(combination_inventory)</code></pre>
 </tbody>
 </table>
 <p>For a fixed roster and a fixed choice of the top five, there are 5! = 120 possible top-five permutations when slots 6-9 remain fixed. That combinatorial count is different from the two strategies in the scope and from the number of actual observed lineups. Strict and top-five-only counts above are conditional feasibility results, not final classifications or evidence of strategy effectiveness.</p>
-<p>An empty Traditional group prevents the proposed two-group comparison under these matching assumptions. Accepting all tied-metric permutations already gives exact matching its most permissive interpretation for the published rates. A similarity-based definition would change the classification question and requires user confirmation; it is not implemented here. Template overlap also means that A and B need not be distinct for every roster.</p>
+<p>An empty Traditional group prevents the proposed two-group comparison under these matching assumptions. Accepting all tied-metric permutations already gives exact matching its most permissive interpretation for the published rates. A similarity-based definition would change the classification question and requires user confirmation; it is not implemented here. Template overlap also means that A and B need not be distinct for every roster. The next section verifies this result with an independent implementation and explains it.</p>
 </div>
-<div id="session-information" class="section level1" number="14">
-<h1 number="14"><span class="header-section-number">14</span> Session Information</h1>
+<div id="strict-application-of-the-scopes-classification-rules" class="section level1" number="14">
+<h1 number="14"><span class="header-section-number">14</span> Strict Application of the Scope’s Classification Rules</h1>
+<p>This section answers one question for scope review: when the classification rules in the project scope are applied exactly as written to the confirmed 2025 sample, how many half-innings fall into each group? It then explains the result. Only batting slots and player metrics are used. Inning runs are never read, so nothing in this section depends on, or reveals, which strategy scores more. No labels are exported.</p>
+<div id="rules-as-written-in-the-scope" class="section level2" number="14.1">
+<h2 number="14.1"><span class="header-section-number">14.1</span> Rules as Written in the Scope</h2>
+<p>Page 2 of <code>Final Project Scope_ MLB Batting Lineup.pdf</code> defines the two strategies for a given set of nine hitters:</p>
+<ul>
+<li><strong>Strategy A, Traditional:</strong> slot 1 is the highest OBP; slot 2 is the next-highest OBP; slot 3 is the highest OPS among the remaining hitters; slot 4 is the highest SLG among the remaining hitters; slot 5 is the next-highest OPS; slots 6-9 hold the remaining four hitters in descending OPS.</li>
+<li><strong>Strategy B, OPS-ranked:</strong> the same five hitters selected for slots 1-5 are reordered from highest to lowest OPS, and slots 6-9 stay identical to Strategy A.</li>
+</ul>
+<p>The summary table on page 3 labels Strategy B as “Best to Worst” (highest OPS through fifth-highest OPS). Read literally, that describes all nine hitters in descending OPS, which can differ from page 2 when a high-OBP, low-OPS hitter enters the Traditional top five. Both readings are tested.</p>
+<p>A lineup matches a strategy only if all nine observed slots agree with it. Published rates have three decimals, and every order permitted by tied values is accepted, which is the most permissive form of exact matching. The rules are applied to the actual starting nine of each team-game, and every eligible half-inning inherits the label of its game’s starting lineup.</p>
+</div>
+<div id="group-counts" class="section level2" number="14.2">
+<h2 number="14.2"><span class="header-section-number">14.2</span> Group Counts</h2>
+<p>Four scenarios are reported. Scenario 1 is the confirmed design. Scenarios 2-4 each change one assumption to test whether the result depends on it. Scenario 3 uses end-of-season 2025 metrics, which were not available when the lineups were set; it is a sensitivity check only.</p>
+<pre class="r"><code>rule_metric &lt;- c(&quot;obp&quot;, &quot;obp&quot;, &quot;ops&quot;, &quot;slg&quot;, rep(&quot;ops&quot;, 5))
+# Slot j follows Strategy A when its batter has the maximal rule metric among slots j..9 (ties accepted).
+slot_follows_traditional &lt;- function(d) vapply(1:9, function(j)
+  d[[rule_metric[j]]][j] == max(d[[rule_metric[j]]][j:9]), logical(1))
+# Page-2 Strategy B: some tie-permitted Traditional top five equals the observed top five,
+# the observed top five is in descending OPS, and slots 6-9 are the remaining hitters in descending OPS.
+matches_ops_page2 &lt;- function(d) {
+  if (any(diff(d$ops[1:5]) &gt; 0) || any(diff(d$ops[6:9]) &gt; 0)) return(FALSE)
+  pick_top_five &lt;- function(remaining, step) {
+    if (step &gt; 5L) return(TRUE)
+    v &lt;- d[[rule_metric[step]]]
+    candidates &lt;- intersect(remaining[v[remaining] == max(v[remaining])], 1:5)
+    any(vapply(candidates, function(j) pick_top_five(setdiff(remaining, j), step + 1L), logical(1)))
+  }
+  pick_top_five(1:9, 1L)
+}
+# Page-3 table read literally: all nine hitters in descending OPS.
+matches_ops_page3 &lt;- function(d) all(diff(d$ops) &lt;= 0)
+strict_groups &lt;- function(lineups, ops_rule) {
+  bind_rows(lapply(split(lineups, lineups$lineup_id), function(d) {
+    d &lt;- d[order(d$slot), ]
+    tibble(lineup_id = d$lineup_id[1], team = d$team[1],
+           traditional = all(slot_follows_traditional(d)), ops_ranked = ops_rule(d))
+  })) %&gt;% mutate(group = case_when(traditional &amp; ops_ranked ~ &quot;Both&quot;, traditional ~ &quot;Traditional only&quot;,
+                                   ops_ranked ~ &quot;OPS only&quot;, TRUE ~ &quot;Neither&quot;))
+}
+group_levels &lt;- c(&quot;Traditional only&quot;, &quot;OPS only&quot;, &quot;Both&quot;, &quot;Neither&quot;)
+count_groups &lt;- function(groups, half_innings, scenario) {
+  tibble(group = group_levels) %&gt;%
+    left_join(count(groups, group, name = &quot;team_games&quot;), by = &quot;group&quot;) %&gt;%
+    left_join(half_innings %&gt;% inner_join(groups, by = &quot;lineup_id&quot;) %&gt;% count(group, name = &quot;half_innings&quot;),
+              by = &quot;group&quot;) %&gt;%
+    mutate(across(c(team_games, half_innings), ~ coalesce(.x, 0L)), scenario = scenario, .before = 1)
+}
+
+lineups_2024_metrics &lt;- lineup_inputs_2025 %&gt;%
+  transmute(lineup_id, team, slot, batter_id, player, pa = prior_pa, obp = prior_obp, slg = prior_slg, ops = prior_ops)
+lineups_2025_metrics &lt;- lineups_2024_metrics %&gt;% select(lineup_id, team, slot, batter_id, player) %&gt;%
+  left_join(official_previous_seasons %&gt;% filter(season == analysis_year) %&gt;%
+              transmute(batter_id, obp = official_obp, slg = official_slg, ops = official_ops), by = &quot;batter_id&quot;)
+half_innings_no_pa_threshold &lt;- eligibility_2025 %&gt;%
+  filter(in_confirmed_innings, technical_inputs_verified, complete_before_substitution,
+         all_nine_metrics_available, order_cycle_verified, all_nine_rates_verified) %&gt;% select(lineup_id)
+lineups_no_pa_threshold &lt;- metric_checks %&gt;%
+  mutate(lineup_id = paste(team, game_id, &quot;starting&quot;, sep = &quot;_&quot;)) %&gt;%
+  filter(lineup_id %in% half_innings_no_pa_threshold$lineup_id) %&gt;%
+  transmute(lineup_id, team, slot, batter_id, player = official_name,
+            obp = official_obp, slg = official_slg, ops = official_ops)
+stopifnot(!anyNA(lineups_2025_metrics$ops), !anyNA(lineups_no_pa_threshold$ops),
+          all(table(lineups_no_pa_threshold$lineup_id) == 9L))
+
+strict_confirmed &lt;- strict_groups(lineups_2024_metrics, matches_ops_page2)
+strict_page3 &lt;- strict_groups(lineups_2024_metrics, matches_ops_page3)
+strict_same_season &lt;- strict_groups(lineups_2025_metrics, matches_ops_page2)
+strict_no_pa_threshold &lt;- strict_groups(lineups_no_pa_threshold, matches_ops_page2)
+# The independent implementation must reproduce the feasibility estimate above.
+strict_vs_feasibility &lt;- strict_confirmed %&gt;% inner_join(feasibility_checks, by = &quot;lineup_id&quot;)
+stopifnot(nrow(strict_vs_feasibility) == nrow(feasibility_checks),
+          identical(strict_vs_feasibility$traditional, strict_vs_feasibility$a_exact),
+          identical(strict_vs_feasibility$ops_ranked, strict_vs_feasibility$b_exact))
+
+confirmed_half_innings &lt;- classification_inputs_2025 %&gt;% select(lineup_id)
+strict_group_counts &lt;- bind_rows(
+  count_groups(strict_confirmed, confirmed_half_innings,
+               &quot;1. Confirmed design: 2024 metrics, 100-PA threshold, page-2 rules&quot;),
+  count_groups(strict_page3, confirmed_half_innings,
+               &quot;2. As 1, but Strategy B = all nine in descending OPS (page-3 table)&quot;),
+  count_groups(strict_same_season, confirmed_half_innings,
+               &quot;3. As 1, but 2025 end-of-season metrics (sensitivity only)&quot;),
+  count_groups(strict_no_pa_threshold, half_innings_no_pa_threshold,
+               &quot;4. As 1, but no PA threshold (all nine starters have 2024 metrics)&quot;))
+knitr::kable(strict_group_counts, col.names = c(&quot;Scenario&quot;, &quot;Group&quot;, &quot;Team-games&quot;, &quot;Half-innings&quot;))</code></pre>
+<table>
+<colgroup>
+<col width="62%" />
+<col width="15%" />
+<col width="10%" />
+<col width="11%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th align="left">Scenario</th>
+<th align="left">Group</th>
+<th align="right">Team-games</th>
+<th align="right">Half-innings</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">1. Confirmed design: 2024 metrics, 100-PA threshold, page-2 rules</td>
+<td align="left">Traditional only</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">1. Confirmed design: 2024 metrics, 100-PA threshold, page-2 rules</td>
+<td align="left">OPS only</td>
+<td align="right">1</td>
+<td align="right">8</td>
+</tr>
+<tr class="odd">
+<td align="left">1. Confirmed design: 2024 metrics, 100-PA threshold, page-2 rules</td>
+<td align="left">Both</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">1. Confirmed design: 2024 metrics, 100-PA threshold, page-2 rules</td>
+<td align="left">Neither</td>
+<td align="right">210</td>
+<td align="right">1565</td>
+</tr>
+<tr class="odd">
+<td align="left">2. As 1, but Strategy B = all nine in descending OPS (page-3 table)</td>
+<td align="left">Traditional only</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">2. As 1, but Strategy B = all nine in descending OPS (page-3 table)</td>
+<td align="left">OPS only</td>
+<td align="right">1</td>
+<td align="right">8</td>
+</tr>
+<tr class="odd">
+<td align="left">2. As 1, but Strategy B = all nine in descending OPS (page-3 table)</td>
+<td align="left">Both</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">2. As 1, but Strategy B = all nine in descending OPS (page-3 table)</td>
+<td align="left">Neither</td>
+<td align="right">210</td>
+<td align="right">1565</td>
+</tr>
+<tr class="odd">
+<td align="left">3. As 1, but 2025 end-of-season metrics (sensitivity only)</td>
+<td align="left">Traditional only</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">3. As 1, but 2025 end-of-season metrics (sensitivity only)</td>
+<td align="left">OPS only</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="odd">
+<td align="left">3. As 1, but 2025 end-of-season metrics (sensitivity only)</td>
+<td align="left">Both</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">3. As 1, but 2025 end-of-season metrics (sensitivity only)</td>
+<td align="left">Neither</td>
+<td align="right">211</td>
+<td align="right">1573</td>
+</tr>
+<tr class="odd">
+<td align="left">4. As 1, but no PA threshold (all nine starters have 2024 metrics)</td>
+<td align="left">Traditional only</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">4. As 1, but no PA threshold (all nine starters have 2024 metrics)</td>
+<td align="left">OPS only</td>
+<td align="right">1</td>
+<td align="right">8</td>
+</tr>
+<tr class="odd">
+<td align="left">4. As 1, but no PA threshold (all nine starters have 2024 metrics)</td>
+<td align="left">Both</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">4. As 1, but no PA threshold (all nine starters have 2024 metrics)</td>
+<td align="left">Neither</td>
+<td align="right">385</td>
+<td align="right">2811</td>
+</tr>
+</tbody>
+</table>
+<p>Under the confirmed design, the Traditional group contains <strong>0 half-innings</strong>, the OPS-ranked group contains <strong>8 half-innings</strong> from <strong>1 team-game</strong>, and <strong>1565 of 1573 half-innings</strong> match neither strategy. No lineup matches both. The planned two-sample comparison of runs per half-inning therefore cannot be run under the rules as written. The Traditional group is empty in every scenario (0 Traditional team-games in any scenario), so the result does not depend on the page-2 versus page-3 reading, the metric season, or the PA threshold. The independent implementation reproduces the feasibility estimate in the previous section exactly.</p>
+</div>
+<div id="the-one-matched-lineup" class="section level2" number="14.3">
+<h2 number="14.3"><span class="header-section-number">14.3</span> The One Matched Lineup</h2>
+<p>The single OPS-ranked match is shown next to the two templates built from the same nine hitters. For display, ties in the templates are broken by the observed order.</p>
+<pre class="r"><code>traditional_template &lt;- function(d) {
+  remaining &lt;- 1:9; picks &lt;- integer()
+  for (j in 1:9) {
+    v &lt;- d[[rule_metric[j]]]
+    k &lt;- remaining[which.max(v[remaining])]
+    picks &lt;- c(picks, k); remaining &lt;- setdiff(remaining, k)
+  }
+  picks  # Observed slot of the batter that the Traditional template places in slot j.
+}
+matched_ids &lt;- strict_confirmed$lineup_id[strict_confirmed$group != &quot;Neither&quot;]
+matched_lineups &lt;- bind_rows(lapply(matched_ids, function(id) {
+  d &lt;- lineups_2024_metrics %&gt;% filter(lineup_id == id) %&gt;% arrange(slot)
+  a &lt;- traditional_template(d)
+  b &lt;- c(a[1:5][order(-d$ops[a[1:5]], a[1:5])], a[6:9])
+  tibble(lineup_id = id, date = classification_inputs_2025$date[match(id, classification_inputs_2025$lineup_id)],
+         slot = 1:9, observed = d$player, obp = d$obp, slg = d$slg, ops = d$ops,
+         traditional_template = d$player[a], ops_ranked_template = d$player[b])
+}))
+knitr::kable(matched_lineups, col.names = c(&quot;Lineup&quot;, &quot;Date&quot;, &quot;Slot&quot;, &quot;Observed&quot;, &quot;OBP 2024&quot;, &quot;SLG 2024&quot;,
+                                            &quot;OPS 2024&quot;, &quot;Traditional template&quot;, &quot;OPS-ranked template&quot;))</code></pre>
+<table style="width:100%;">
+<colgroup>
+<col width="19%" />
+<col width="8%" />
+<col width="3%" />
+<col width="14%" />
+<col width="7%" />
+<col width="7%" />
+<col width="7%" />
+<col width="16%" />
+<col width="15%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th align="left">Lineup</th>
+<th align="left">Date</th>
+<th align="right">Slot</th>
+<th align="left">Observed</th>
+<th align="right">OBP 2024</th>
+<th align="right">SLG 2024</th>
+<th align="right">OPS 2024</th>
+<th align="left">Traditional template</th>
+<th align="left">OPS-ranked template</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Dodgers_776350_starting</td>
+<td align="left">2025-09-12</td>
+<td align="right">1</td>
+<td align="left">Shohei Ohtani</td>
+<td align="right">0.390</td>
+<td align="right">0.646</td>
+<td align="right">1.036</td>
+<td align="left">Shohei Ohtani</td>
+<td align="left">Shohei Ohtani</td>
+</tr>
+<tr class="even">
+<td align="left">Dodgers_776350_starting</td>
+<td align="left">2025-09-12</td>
+<td align="right">2</td>
+<td align="left">Mookie Betts</td>
+<td align="right">0.372</td>
+<td align="right">0.491</td>
+<td align="right">0.863</td>
+<td align="left">Freddie Freeman</td>
+<td align="left">Mookie Betts</td>
+</tr>
+<tr class="odd">
+<td align="left">Dodgers_776350_starting</td>
+<td align="left">2025-09-12</td>
+<td align="right">3</td>
+<td align="left">Freddie Freeman</td>
+<td align="right">0.378</td>
+<td align="right">0.476</td>
+<td align="right">0.854</td>
+<td align="left">Mookie Betts</td>
+<td align="left">Freddie Freeman</td>
+</tr>
+<tr class="even">
+<td align="left">Dodgers_776350_starting</td>
+<td align="left">2025-09-12</td>
+<td align="right">4</td>
+<td align="left">Max Muncy</td>
+<td align="right">0.358</td>
+<td align="right">0.494</td>
+<td align="right">0.852</td>
+<td align="left">Teoscar Hernández</td>
+<td align="left">Max Muncy</td>
+</tr>
+<tr class="odd">
+<td align="left">Dodgers_776350_starting</td>
+<td align="left">2025-09-12</td>
+<td align="right">5</td>
+<td align="left">Teoscar Hernández</td>
+<td align="right">0.339</td>
+<td align="right">0.501</td>
+<td align="right">0.840</td>
+<td align="left">Max Muncy</td>
+<td align="left">Teoscar Hernández</td>
+</tr>
+<tr class="even">
+<td align="left">Dodgers_776350_starting</td>
+<td align="left">2025-09-12</td>
+<td align="right">6</td>
+<td align="left">Michael Conforto</td>
+<td align="right">0.309</td>
+<td align="right">0.450</td>
+<td align="right">0.759</td>
+<td align="left">Michael Conforto</td>
+<td align="left">Michael Conforto</td>
+</tr>
+<tr class="odd">
+<td align="left">Dodgers_776350_starting</td>
+<td align="left">2025-09-12</td>
+<td align="right">7</td>
+<td align="left">Andy Pages</td>
+<td align="right">0.305</td>
+<td align="right">0.407</td>
+<td align="right">0.712</td>
+<td align="left">Andy Pages</td>
+<td align="left">Andy Pages</td>
+</tr>
+<tr class="even">
+<td align="left">Dodgers_776350_starting</td>
+<td align="left">2025-09-12</td>
+<td align="right">8</td>
+<td align="left">Tommy Edman</td>
+<td align="right">0.294</td>
+<td align="right">0.417</td>
+<td align="right">0.711</td>
+<td align="left">Tommy Edman</td>
+<td align="left">Tommy Edman</td>
+</tr>
+<tr class="odd">
+<td align="left">Dodgers_776350_starting</td>
+<td align="left">2025-09-12</td>
+<td align="right">9</td>
+<td align="left">Ben Rortvedt</td>
+<td align="right">0.317</td>
+<td align="right">0.303</td>
+<td align="right">0.620</td>
+<td align="left">Ben Rortvedt</td>
+<td align="left">Ben Rortvedt</td>
+</tr>
+</tbody>
+</table>
+<p>This lineup is simply all nine hitters in descending 2024 OPS. It fails the Traditional rule at slot 2: Freddie Freeman had a higher 2024 OBP (.378) than Mookie Betts (.372), so the template bats Freeman second, while the observed lineup bats Betts second.</p>
+</div>
+<div id="why-no-lineup-matches-the-traditional-rule" class="section level2" number="14.4">
+<h2 number="14.4"><span class="header-section-number">14.4</span> Why No Lineup Matches the Traditional Rule</h2>
+<p>The diagnostics below use the 211 team-game lineups of the confirmed design.</p>
+<div id="each-rule-checked-on-its-own" class="section level3" number="14.4.1">
+<h3 number="14.4.1"><span class="header-section-number">14.4.1</span> Each Rule Checked on Its Own</h3>
+<p>Each slot’s rule is checked separately: does the batter in that slot have the highest value of the rule’s metric among the batters in that slot and all later slots? A lineup matches Strategy A only if every row below holds at the same time.</p>
+<pre class="r"><code>confirmed_lineups &lt;- split(lineups_2024_metrics, lineups_2024_metrics$lineup_id)
+confirmed_lineups &lt;- lapply(confirmed_lineups, function(d) d[order(d$slot), ])
+slot_checks &lt;- t(vapply(confirmed_lineups, slot_follows_traditional, logical(9)))
+rule_descriptions &lt;- c(&quot;Slot 1 has the highest OBP&quot;, &quot;Slot 2 has the highest remaining OBP&quot;,
+  &quot;Slot 3 has the highest remaining OPS&quot;, &quot;Slot 4 has the highest remaining SLG&quot;,
+  &quot;Slot 5 has the highest remaining OPS&quot;)
+first_kept &lt;- apply(slot_checks, 1, function(ok) if (all(ok)) 9L else which(!ok)[1] - 1L)
+slot_rule_table &lt;- bind_rows(
+  tibble(rule = rule_descriptions, lineups_passing = colSums(slot_checks)[1:5]),
+  tibble(rule = &quot;Slots 6-9 are in descending OPS&quot;, lineups_passing = sum(apply(slot_checks[, 6:9], 1, all))),
+  tibble(rule = &quot;All nine slots follow Strategy A&quot;, lineups_passing = sum(first_kept == 9L))) %&gt;%
+  mutate(share = sprintf(&quot;%.1f%%&quot;, 100 * lineups_passing / length(confirmed_lineups)))
+knitr::kable(slot_rule_table, col.names = c(&quot;Rule&quot;, &quot;Lineups passing&quot;, &quot;Share of lineups&quot;))</code></pre>
+<table>
+<thead>
+<tr class="header">
+<th align="left">Rule</th>
+<th align="right">Lineups passing</th>
+<th align="left">Share of lineups</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Slot 1 has the highest OBP</td>
+<td align="right">68</td>
+<td align="left">32.2%</td>
+</tr>
+<tr class="even">
+<td align="left">Slot 2 has the highest remaining OBP</td>
+<td align="right">60</td>
+<td align="left">28.4%</td>
+</tr>
+<tr class="odd">
+<td align="left">Slot 3 has the highest remaining OPS</td>
+<td align="right">99</td>
+<td align="left">46.9%</td>
+</tr>
+<tr class="even">
+<td align="left">Slot 4 has the highest remaining SLG</td>
+<td align="right">82</td>
+<td align="left">38.9%</td>
+</tr>
+<tr class="odd">
+<td align="left">Slot 5 has the highest remaining OPS</td>
+<td align="right">83</td>
+<td align="left">39.3%</td>
+</tr>
+<tr class="even">
+<td align="left">Slots 6-9 are in descending OPS</td>
+<td align="right">34</td>
+<td align="left">16.1%</td>
+</tr>
+<tr class="odd">
+<td align="left">All nine slots follow Strategy A</td>
+<td align="right">0</td>
+<td align="left">0.0%</td>
+</tr>
+</tbody>
+</table>
+<pre class="r"><code>leading_slots &lt;- sapply(1:5, function(k) sum(first_kept &gt;= k))
+knitr::kable(tibble(slots = c(&quot;Slot 1&quot;, paste0(&quot;Slots 1-&quot;, 2:5)), lineups_following_all = leading_slots),
+             col.names = c(&quot;Leading slots&quot;, &quot;Lineups following every rule in these slots&quot;))</code></pre>
+<table>
+<thead>
+<tr class="header">
+<th align="left">Leading slots</th>
+<th align="right">Lineups following every rule in these slots</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Slot 1</td>
+<td align="right">68</td>
+</tr>
+<tr class="even">
+<td align="left">Slots 1-2</td>
+<td align="right">13</td>
+</tr>
+<tr class="odd">
+<td align="left">Slots 1-3</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">Slots 1-4</td>
+<td align="right">0</td>
+</tr>
+<tr class="odd">
+<td align="left">Slots 1-5</td>
+<td align="right">0</td>
+</tr>
+</tbody>
+</table>
+<p>No single rule holds in more than half of the lineups. Following the rules in order, 68 lineups have the highest-OBP hitter leading off, 13 also have the next-highest OBP batting second, and <strong>0 also satisfy the slot-3 rule</strong>. The bottom of the order is also restrictive: slots 6-9 are in exact descending OPS in 34 lineups. A random order would satisfy that last condition 1 time in 24 (4.2%); traditional lineup practice does not require it either, for example when a catcher or a fast runner bats ninth.</p>
+</div>
+<div id="where-the-best-hitter-bats" class="section level3" number="14.4.2">
+<h3 number="14.4.2"><span class="header-section-number">14.4.2</span> Where the Best Hitter Bats</h3>
+<p>Traditional lineups place the best hitter third and a power hitter fourth. The table shows where each lineup’s best hitter by each metric actually bats, and the figure repeats the OPS column.</p>
+<pre class="r"><code>best_hitter_slots &lt;- bind_rows(lapply(confirmed_lineups, function(d) tibble(
+  highest_obp = d$slot[which.max(d$obp)], highest_ops = d$slot[which.max(d$ops)],
+  highest_slg = d$slot[which.max(d$slg)], template_slot3 = traditional_template(d)[3])))
+best_hitter_table &lt;- tibble(slot = 1:9) %&gt;% bind_cols(
+  as_tibble(lapply(best_hitter_slots, function(v) as.vector(table(factor(v, levels = 1:9))))))
+knitr::kable(best_hitter_table, col.names = c(&quot;Observed slot&quot;, &quot;Highest OBP&quot;, &quot;Highest OPS&quot;, &quot;Highest SLG&quot;,
+                                              &quot;Template&#39;s slot-3 hitter&quot;))</code></pre>
+<table>
+<thead>
+<tr class="header">
+<th align="right">Observed slot</th>
+<th align="right">Highest OBP</th>
+<th align="right">Highest OPS</th>
+<th align="right">Highest SLG</th>
+<th align="right">Template’s slot-3 hitter</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="right">1</td>
+<td align="right">68</td>
+<td align="right">68</td>
+<td align="right">67</td>
+<td align="right">58</td>
+</tr>
+<tr class="even">
+<td align="right">2</td>
+<td align="right">47</td>
+<td align="right">49</td>
+<td align="right">46</td>
+<td align="right">78</td>
+</tr>
+<tr class="odd">
+<td align="right">3</td>
+<td align="right">16</td>
+<td align="right">27</td>
+<td align="right">27</td>
+<td align="right">30</td>
+</tr>
+<tr class="even">
+<td align="right">4</td>
+<td align="right">33</td>
+<td align="right">33</td>
+<td align="right">35</td>
+<td align="right">10</td>
+</tr>
+<tr class="odd">
+<td align="right">5</td>
+<td align="right">8</td>
+<td align="right">7</td>
+<td align="right">8</td>
+<td align="right">15</td>
+</tr>
+<tr class="even">
+<td align="right">6</td>
+<td align="right">12</td>
+<td align="right">0</td>
+<td align="right">0</td>
+<td align="right">7</td>
+</tr>
+<tr class="odd">
+<td align="right">7</td>
+<td align="right">14</td>
+<td align="right">3</td>
+<td align="right">4</td>
+<td align="right">13</td>
+</tr>
+<tr class="even">
+<td align="right">8</td>
+<td align="right">4</td>
+<td align="right">1</td>
+<td align="right">1</td>
+<td align="right">0</td>
+</tr>
+<tr class="odd">
+<td align="right">9</td>
+<td align="right">9</td>
+<td align="right">23</td>
+<td align="right">23</td>
+<td align="right">0</td>
+</tr>
+</tbody>
+</table>
+<pre class="r"><code>best_hitter_names &lt;- bind_rows(lapply(confirmed_lineups, function(d) d[which.max(d$ops), ])) %&gt;%
+  count(team, player, slot, name = &quot;lineups&quot;) %&gt;% arrange(desc(lineups)) %&gt;% filter(lineups &gt;= 10)
+knitr::kable(best_hitter_names, col.names = c(&quot;Team&quot;, &quot;Best hitter by 2024 OPS&quot;, &quot;Observed slot&quot;, &quot;Lineups&quot;))</code></pre>
+<table>
+<thead>
+<tr class="header">
+<th align="left">Team</th>
+<th align="left">Best hitter by 2024 OPS</th>
+<th align="right">Observed slot</th>
+<th align="right">Lineups</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Dodgers</td>
+<td align="left">Shohei Ohtani</td>
+<td align="right">1</td>
+<td align="right">67</td>
+</tr>
+<tr class="even">
+<td align="left">Cardinals</td>
+<td align="left">Willson Contreras</td>
+<td align="right">4</td>
+<td align="right">31</td>
+</tr>
+<tr class="odd">
+<td align="left">Giants</td>
+<td align="left">Tyler Fitzgerald</td>
+<td align="right">9</td>
+<td align="right">23</td>
+</tr>
+<tr class="even">
+<td align="left">Giants</td>
+<td align="left">Rafael Devers</td>
+<td align="right">2</td>
+<td align="right">16</td>
+</tr>
+<tr class="odd">
+<td align="left">Cubs</td>
+<td align="left">Kyle Tucker</td>
+<td align="right">2</td>
+<td align="right">15</td>
+</tr>
+<tr class="even">
+<td align="left">Angels</td>
+<td align="left">Mike Trout</td>
+<td align="right">3</td>
+<td align="right">13</td>
+</tr>
+<tr class="odd">
+<td align="left">Cardinals</td>
+<td align="left">Willson Contreras</td>
+<td align="right">2</td>
+<td align="right">12</td>
+</tr>
+<tr class="even">
+<td align="left">Giants</td>
+<td align="left">Rafael Devers</td>
+<td align="right">3</td>
+<td align="right">10</td>
+</tr>
+</tbody>
+</table>
+<pre class="r"><code>best_ops_counts &lt;- as.vector(table(factor(best_hitter_slots$highest_ops, levels = 1:9)))
+old_par &lt;- par(mar = c(3.6, 1, 3.2, 1), bg = &quot;#fcfcfb&quot;)
+mids &lt;- barplot(best_ops_counts, names.arg = 1:9, col = ifelse(1:9 &lt;= 2, &quot;#2a78d6&quot;, &quot;#c3c2b7&quot;),
+                border = NA, space = 0.35, axes = FALSE, ylim = c(0, max(best_ops_counts) * 1.2),
+                col.axis = &quot;#52514e&quot;, cex.names = 0.9)
+abline(h = 0, col = &quot;#c3c2b7&quot;)
+text(mids, best_ops_counts, labels = best_ops_counts, pos = 3, col = &quot;#52514e&quot;, cex = 0.85, xpd = TRUE)
+mtext(&quot;Lineups by batting slot of the best hitter (highest 2024 OPS)&quot;, side = 3, line = 1.8,
+      adj = 0, col = &quot;#0b0b0b&quot;, cex = 0.95)
+mtext(sprintf(&quot;Slots 1-2: %d of %d lineups. Slot 3: %d.&quot;, sum(best_ops_counts[1:2]),
+              sum(best_ops_counts), best_ops_counts[3]), side = 3, line = 0.6, adj = 0, col = &quot;#52514e&quot;, cex = 0.8)
+mtext(&quot;Observed batting slot&quot;, side = 1, line = 2.3, col = &quot;#52514e&quot;, cex = 0.85)</code></pre>
+<div class="figure">
+<img src="data:image/png;base64,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y+2t5cIgAAEIQAACEIAABCAAAQhAAAIQgAAEIAABFKC0AQhAAAIQgAAEIAABCEAAAhCAAAQgAAEIQKDcEkABWm5vLRcGAQhAAAIQgAAEIAABCEAAAhCAAAQgAAEIoAClDUAAAhCAAAQgAAEIQAACEIAABCAAAQhAAALllgAK0HJ7a7kwCEAAAhCAAAQgAAEIQAACEIAABCAAAQhAAAUobQACEIAABCAAAQhAAAIQgAAEIAABCEAAAhAotwRQgJbbW8uFQQAC/zYCy5cvNz/88MO/7bK5XghESuCXX34x8+bNNz/99HOk5VIYBMoqgR9//NHoV+iiZ3bFihXFqub333/vnvc//vijWMeRGQIQgAAEIACBskdgg0Kv8hVXXGmmTZvmqvn444+ZqlWrFrvKRx11lPn773/MfvvtZ3r37lXs4zkgdwL//POPad36KFdQy5YtTbdu1+ReaMQlPProY+app55ypd5//31mu+22i/gMxS/u559/NlWqVEl64MqVK43YVqpUKSbP008/bR555FGXNmjQQNOgQYOY/eV9Y8iQIeall152l/noo4+Y6tWr5+WSk/HPy8mSFLp69WrTv39/884775rPP//crFq1ylSsWNHccccdpk2bM5McVTQ52bU88cST5vHHH3cHDB58r6lbt27RgwsgpRCf31ywpHv2k5Udxf3KpP9I1l7C9cr2GsJllPT633//bY499jj3LL3//hiz+eZr+t+S4prL9R5xxJHu8GbNmpkePbrnUlRBHBtF+3n99eFm7NgPzJw5c83ixYvNtttua3bYYXtz0EEHuV8mF6p30IcfHmZmzZrllIB77rmnfZ/c1xxwwAGmRo0amRRhoqhH/In+/PNP0779ua5OZ555ZrH6+/iy4rfHjx9vRowYaaZMmeJ+S5YscVk23XRT+z+gjjn++ONN27ZtTbVq1eIPLbLdr18/M3r0mCLp4YSKFSuYjTba2Gy99dbm4IMPNv/732GmQoUK4SwJ17/44gvz6quvuTpqfeHCheY///mPvcc7mJ133tnsuusuRt8A22+/fcLjlahrPf30M8xxxx1rhg0bljQfOyAAAQhAAAIQKPsECl4BqpevTz75xJEu7qiuvz0ffTTOKkD/NltssYVPYlkKBD766CN31kw/GEq6il9//bXxdZQlXWmKrBhuvPFGow/AIUPuT1iVd99913TpcpV59tlnirzc6yPAX8vvv//7rBrmzZsXXH+2/UZC6KHEVPxD2fK+euONN5nbbrst5jxSTtWuXTsmLdVGqmtZuHDdc1HIFjKF9PymYp1uXybPfqoyorhf6fqPVO1Fdcv1GlJdX7733XvvYPPZZ5+Zdu3aml122SU4XUlwDU6W5Yrv86tXT6+UyvIUJXJYFO1HyrArr+wSvD/6iuudcuRIYwYMGGgHZY90g0fJ+koNLl1zTTf7P3iI0boXDTQ99NBDZssttzQvvviC2X333f2uIsso6lGk0LUJvXr1tkrKEW7rgANaJstWrHT9v7zhhhvMoEH3xFyzL+TXX381X3wxxf369etvOnS4wBoW9DYbbJD8c2LmzFnB/2NfTqrlww8/7BSrnTp1NJdffnnCrHqn79r1GjN06NAi9dS+6dOnu98LL7xgr+dGc8kll5hevXqa9dZbr0h5RxxxhGnZsoV5+eVXzGuvvW6OPnrNYH2RjCRAAAIQgAAEIFDmCSR/Yynzl8YFQKBsEtCH1t577200LevEE09MeBEPPvigU34m3Eli3gkUCn8per3yc+ONN7aWa8e6Dzkp8FN9lIcBFcq1hOv0b13P5NkvbTbp2ktZuIZkDL/66is38KRnqXv3sm9Bmew6Czk9ivbz3Xff2f+dJ5mlS5e6S91jjz1Mq1at7KBQLTvVeZ555ZVX3XL48BFGyrkxY0Zb68ONimDp06ePuf/+NQOQ2223rbMk1MyQceM+dorHZcuW2bSjzTPPPG1kdRsvUdUjvlxtv/POO04xm2hftmlS1l5wQYdg1pWUhXoX0UCALCl1b8Rv5MhRZvbs2UYDbQMHDjKTJk1ylpNSCKcTzUapXHnjItlWrfrL/P77b2bRosXOYEHvP9dd19dsttlm5txzzy2SX8rtsLXmf//7X9OkSRNnQfrPP3+br79eaD788EOnBP3rr7/MnXfeafR/sV+/m4uUpQQpSTU7qUuXLqZFixaB5XfCzCRCAAIQgAAEIFBmCfwrFKCPPfaoe3ErVMvDMtt6qHjeCOjlP5UsXfpdqt12KtdxplGjRi5PnTqlP5U/ZWXL4M50/Evqkrx7EJ1PFi7ZuJYolGspKWaFfp50z35J1D9V/5FJeymEa8iG02WXXWY0rbhz50vNVlttlU0RKY9JxTXlgf+ynbm2n4su6hgoP2X1JyvCsOVft27dzGWXXW7k6kHT2mVJeeutt8RQ/vTTT83ddw9waVICPvfcs8EsogsvvNC8995oc8YZZ5jffvvNdOp0sbUa/jTmHDowinrEVGrthvw8d+zYKdGurNM02+SEE040UtpKNIV84MABznVUfKF9+/a1StCR5tJLO7uB2jFj3jennXa6GTVqpFl//dShBeRGpWnTpvFFBtvffvutuzYpeCVXX93V7LXXXjEDerLQ9spPKV2lgN5nn32CMvyKFLayAL3wwouMlKD33Xefm+Yud1jxsttuuzrLT1mA9unT29x1113xWdiGAAQgAAEIQKAcEEj9plIOLlCXcOSRR9qpTq3dSHY5uSQuAwIpCcjfldq8fql8iKYshJ0FT+D3338P6ugV3kECKxDIksC/sf+Qqx35KZQCp2PHjlmSS33Yv5FraiLR75UC7e2333YFy8/nFVdcUUQxKZ/Zd955h/NlqYxShEpZFhb5UJZoavdDDw0NlJ8+z4EHHmBuv32N6xFZRXqFnd8fVT18eeHlpZdealR+lG6dbr65X6D8lKL+gw/eT6j8VD2kTNZ7ta65Xr16rmp6fuRWIFeRocLzzz9nLWtbu6I0nV0Wp2GRv2cv8nGeSPmp/arnSSedZK6/vq/Pbu69995gPX5FXCWPP/6EtURdFL+bbQhAAAIQgAAEygGBf4UCNNv79NNPP2V7qJGvvNL2I+krr8idCpSTjcjSQC+g+RRZ3OhXyCKfZLmI/Grl0p5yOXdxjs2ljmpn+W4r+WyPivycL3+hmd4DPaeaVpmphJ/rSpU2zPSwyPJJAaugS9lKSfWTuT6/udYzn+22OOxzvV/FOVc2eXONMq3r07TcbGTgwDXKm+bNm2Uc2MafJ19cdS25tl1fx1zLyeXe6P97ruf315FuOXbs2CDLySefFKzHr2jK+4EHHuSS5ddSSkwv2tb0eImC8SQLiHjKKafYqdKbu3wPPPCgW/o/UdTDlxVeSvmnuinQ3S239A/vynr9yy+/DKbTK+iXFLsbbpj+/4lmlwyxPsq9de1NN90UWN5mXRl7oMpTkCUvPg6A3549e5ZftffwwGA92Uq7du2CgEoTJkxMls0pUhUky1uLJs3IDghAAAIQgAAEyiyBf4UCVBEgDz/8CDut5boiN0pRU7Vv+PDhbp8sAc4440wbVGYHax1Qzy3lS0pBH9KJXtLOPvsca2m6j6lVq7b77bvvfub88y8wM2bMSHq4HOyrDvr56UeJMr/44otBvqlTp8Zk0Yi1jlddJZq+dc457U3jxjvbEfr69oOupo142sqOrD+fUhmqDxVNLdKHwTbb1LLRw7e3PpW2Mfvv38yVN3Fi8pfHmAql2ZC1haYYqU61a2/rfjqnAg4k+tCSpYFnFB79T3YavfAqf+fOnZNlSZuue3bWWWeZHXdsaNtCXbdU21A013QipZCmz51yyql26tYejqHak34HH3yInarcLeEHoXw4qt5e3nvvveC6ZZ307LPPuu0nnnjCZzHnnXeeS5PvLi+KZu95zZkzxye7ZZRtfty4cS56qu6h2tm2225np5EdbdvQI+5c8g+mepx99tkxdch0I9/tUc/18cefYN0FNLYfuXVcm9cze9555xt9FMZLpvzjj0u1LcVAjx49nN8xPWv16zdwv2OOOca1IX2MxYvyi2v//uumbfbu3Se4594CKv648Ha21yJlnqYK77fff91zq3t+5JGtXf+aiZIj234yXPdM1nN5flV+LvXMpt2me/YzueZEebK5X4n6j0zaS3GvQZxkeda69VGmTp26rg9RH6m2f8899yb9X6X+1fdvb775ppk/f4H736dj9Qzp+EmTJifCkTBt7ty5Qb8u67dMJCqu8efSQIz+N+r/hv5v17X/e/bYY083nVrBqTRI5a/9rbfeij88ZlvvDOrfVIZ+8pGo95FRo2It6mIOWruR7b3xZekdRVPA9Q5Ss+bW7vz6X6p7079//4SDTcVtP/5c4aVcFyh4jhRoitaeSjbZpHKwW1PAvXz66WeBRagivSeT//znP9b35/5ut+6FmHmJoh6+LL9UO9W7g0Q+ahXlPArp2bNX8Kxde+21pmrVqhkXK+vL008/zeWXwv7ll1/O+NhUGcPc4/8XS0npJRNLTfn07WP9uXbvfq318XllcG99GeHlMccc7Tb1DqNnEYEABCAAAQhAoHwR+Ff4APVR4BM5aPdRU2UpIIfrcpQeFvmikvJNipKuXa+2CrprwrvduhQUUkTcfvvtwUukdkjJp49w/V577TU3Def8888vcrwsD6RIkqSyQFu8eEmQT36nwrJo0UK3Tw7j5ZvqzDPPtA7l102P1Qej/CZJsfPqq6+aBx54oMgIv84tH1ByHB8WvdTqY0Y/HXvVVV0si67BqH84bybrqlebNm0CCwt/jCKr6jdixHDz6KOPxvh82muvvV39VUe9lLZte5Y/rMhSZSjIgUTRPbORN998y1pX3GJkCeJFARUUcVW/jh0vsu3lusCqwOfRUlFmL7roIhclNZyudX28Soms3wsvvGieeupJ59/K5xs37uOYNqCPbP0ky5b9YBYvXhy0AX/M559PWrt/neWgPgp8m4qPAh9Fm9cJ9azomQmLLOXef/8D95s4cYJ7BlQPBZAoruSzPeo+6ONcfszCIgtW/8y+8sorzqemlOj60JVkyj9cZqp1KSi6dLmqiNWnrEDlV02/l156yfouG2x22mmnoKhp06YH99cnqt5efPAPv51omc21SCl4yy23Og6+TH30q8/Qb8yYMfbZe9lsuummfnewzLWfDArKYCWX5zfXembbbtM9+xlcdpEs2d6vRP1HJu2lONeggCtSxilac1j0bPq2//rrrzu/ffF+jPW/1fdvCxYscNGgFcDIi44PK7R8erKlok6rTE1/1wBOOomSa/hcuhYpLOMHrXRt+mlgQ1Oz/bUnGzBdsWKlnfp9pYtUHi5fimL9NBD6wAND3PTg8H6/nsu9URlSsGqwMGyhrnT1S/rp/rz66ms2gveDMf1acdqPykskzZs3N/plIhPWWgNWqFDBKmobB4fof5eXhg3X9bs+LbyUUnf48BHuWmfOnGXkS1ISRT3C51G/pOdF70/777+/9fl8cZFnJ5y/OOvjx4932aUoTBRwKF1ZJ598snnyyadctueff8EGUrog3SFp94f9wNauXTsm/yGHHBKcT/5dH3roobQ+e6UUz0Q0AKLBF7376Tlp3759JoeRBwIQgAAEIACBMkLgX6EAzeRe3HXX3TZq5NfWarOW8/+lqJfffLPEvPHGm0ZKCn0c9evX3yoIT7CWgDvGFNm16zX2RX6oS5OiR0pSRR2VMkUv2FKk6ePxqquudh9Y2bxgxpwwxYZejjUtS0rLyy7rbEfmT3fXNGHCBKvMudZF99SHR5UqXayD+1h/TT169AyUn23anGmVjG2tRdw29sNrnv3wessq6552Hy/iIIvQli1bpKhJ8l3eakWsZM0gC4JvvvnGvWxq1H3Bgq+t4vJIa8U60UX0VEmaliVLXjm0lyJWH2i77rrmQyP+TKqnRB+zp556SvzujLZ79uzp8p1zzjnWsugEa8FS0+gjQZFCpRy4997B9oNHbeLmmPKkAFQ9ZQmnjyopSuWHU5Y8v/76i/tgUVuTklQfglKiSqnsZdiwh+30q7+d5anSFNm0U6dObveee+5hP652c1bJejH3lha33Xars7DZZJNNfDEZLXNp87LC9cpPfTSpzfv28MEHYy2Xfuaxxx7PWkmuC8hne1QEWa/8lF8+WTSKr+6fPsJvvfVWp0Dp2/d6m7bc1qW7YyrliKzDo+Avq5YOHS4MppB36NDBTbesU6eObePT7Afek66OUugffvjhti+ZYKpVq+bqocEYtc2xYz8wgwff59KuvPJK1+9oY/fdm7i0VH+yuZbLLrvcFamBhUMOOdhZIM2ePccN/khB4y3P5cMtXkqyn8z2+VWdc61ntu023bMfzzOT7VzuV3z5mbSXTK9Bir5DDz0ssJg7++x2gaXirFkzXd+mWQ0arFF/+sknHyeM0q06ytJe/7srVqxo/y/910X11oBFixaZKcFUxv/933tauOAs1atXd+up/kTJ1Z9HivNjjz3OKTqVdqCd2nv++ec5BaGUxA8/PMwpQPV/OZ288cYbLosUR8cee4yLgC5l5KhRbzhlkd5n1Pdof3xAmFzvje5F+/bnOoWgylffqfch3R8pPjXbRla76v+kpNWAp5dM24/Pn8tSAzZekSzLWNXPiwabvcQr3326X2677TrlnPpArwD1+9MtU9UjfOytt97mBk41uKQBMb3fRCHfWl+ifqBXVsJ+sK84ZUvZW7lyZaec1XuSlLXynZqLaKDZS+PGawI6+u1WrVq5/4VSkup9o0mT3e273qnmsMMOdTMpEg3A+WPTLRXwSta7ej+T4QMK0HTE2A8BCEAAAhAoYwRWrVq5upB/1on9avti5X7z58/Lqq7WKtIdb0epixzvy9ayZcuWq3/66ccieewIc1AHq2SI2f/555+tti9bbr/9YFn944/LYvaL7eLFi1bbDzOXx34QrP7uu6UxeaxFZVD+V1/NjdkXvjfW4i7IZxUfMfluuOH6YJ+uxVq0xOxXOdaCcHWzZs2CfOPHfxKTxyqC3D7lWblyRcw+HW8tu4JjrRK3yP5wXePXV6z4MzhW9dtvv31XWwVzkTKsQ/sgn3VIH7P/jTdGBftstOuYff58y5f/sdr663L57HS6hHl83vilnSIVlK86Pvjgg0WO1720H3Munw1AsHrevK9i8tx//31BGdYqIWafP9/vv/8WlKHzzJ49Oyaf2CtdP/uxG7PPl2EVp0GeadOmFslz8803BfuttWnMfl+2ltm0eWt1tNpOQXPl16q1zerJkyfFlK86qk42OEJQh0aNdiqSx19LsmUu7THVM/Xcc88F9bLTMRM+szYy8Go7COLyWR9v7nrC9UzHP5w30foff/zungHdA/VPI0eOSMjnpptuDOpqlSFF8jzxxOPB/tdee7XI/kTnjk9Ldy3xfYvaVnwZ33//XfDcWUV8kWc7in4y/pzx21E8v1HUM5d2m8mzH3/d8dtR3K9U/Ue69pLJNZx55hlBu7WDWkXak67JDioGeXRN4etUHxrux2yU6NVqgz6P+mm/nm6p/0O+rA4dLkh6XL65hp/1iy++eLX+Z4brLq524COoq+r8yCPDYvL469CyYcOGqxcsmB+zX+XZQbugDL3bhM+h9Vzvjf5v+nok6pN0Hf59SPmswjumDpm0n/g6F3db70JW0RXU0yq6YupgB5eCffHva/HnsrM4grzDhsXej/i88dvp6uHzf/jh2OA9M3zPJ036PDi3DfQTcw3+2HTL9977v6AMGzAoqzJ0DutuICgn/r3orLPOCvbFv7smqp+d9bBa71e+HdlB8yL10v9oq7gO8vi8Nujj6oMPPni1/h9Yi+nVv/32a5FjE50znHbooYe6cq1BRJHnMJyP9cL+fuT+cH9oA7QB2gBtIFEbiGYIuYwpfZNV9/bbb3Oj2PH7ZcGw3nrrueQpU76I2d29ew9n6SBrP43KJ7LCk0XJ7XZ6vET+LX100ZiCItzYd9997RTzM4uUqFHx3r17Bel+mrgSZAGwZMkaq4cmTXYLrjfIbFcU9VNWpddc0zXrqeW+vJtuujmhnylNnfJT0TQNXpahXmQRIwtdyXPPJfZlKutSP2Xcfsj5Q4u9tEpg065dUUsb3Uv5yJLIylZWlGH5+ONPnLWqLGeTnV+WJrIK9WI/1v1qiS+zafMvv/xSMGVbUVMTRR+XVaXaSbaSz/bo75+e2TvvvCPhM1u3bh3rsuJ6V325j+jVq3e2l5LwOFkpf/HFFLfPfhxaa8pDEubr0qVLYFGkKYbF8WuYsMAcE48++ig7Zb9LkVLsR6e1Wm7j0mVdFp6Or8SS7iezfX5zrWc+220R6BkkZHu/Mig66yyyunv55Vfc8eojvc+9+ALl5sQqMlyy+tnwlNj4vHbgzM5qqBIkZ2LF6TOPHbvO5UutWuus+fz+RMuoueqZGTr0IXcquerp2/e6IhZ+egeRZbOsKjORp59+KphBEc4v9yz+fWb69GnhXc4iMtd7M3PmOlccmrEQLzq3fIDK4l0zKNZbr2RfQ2VpKxdB06atuXa5JWrRonlMNb1FpBIVMT6VbLjhuv12YCtV1ph9mdRDB8jd0fnnX+DeM9Xuzjgj+/eamAqs3Zg1a3aQrP972cpWW62znA6/t8WXJ3dQVkle5KdZF7KsbtGihXORpPcriabXH3hgUT+squtbb71pjjvu2BirVVmfqo9RefIpu8MOOzp3N/GuNuLrFd72z5jccchSGYEABCAAAQhAoPwQKNk3zwLmpikvu+++e8Iayq+mn3r622/rXnA1xd1H+pSz/QYNGiQ8XomaVrP11lu7/Zpim0/p3PnSpMVbi1obaKKe2z958uQgn5SjXvEoRYuCMCRyAG9H1d10Z02ry1Y0HS7+g8OXpY+jCy5Y4ydViidNqfWiKV+nnXaa25Sy9n3razJeFMRKoinzUthmK6kY6tr9vfz443Exp7AWoEY+XT/77NMiH7DhjDVr1gg2V65cFayX5Eo2bV71GzFipKvmmnuV3NeXFHthpURxri1f7VEDEHJHIbHWLkmj+2r/UUe1NtaKSqvO/YFbieiPXCB4kQ+zZCLG4f1h33TJjslnugKYJBMFwfISDmRWGv1kNs9vFPXMV7v1XIu7zOZ+Ffccxc3//vvvB4dIuZFKfP2XL1/u3J4kyisFlbUATbQrozRN2fbiB9j8drKlr1ei/cmeg0R5fZrcXHilkQYv1Y4SiSJzZ+JfsX79+kZufBKJXJbIpYsk/JxqO4p7oyByXs48s43z3e23/VLT7vv372cuvPBCG/xqO5+c96XakQJVaiq+ZNdddzF9+hQd3AoHM0o3lXuDDf4T1FvKt0wk03qoLLmX0TuF/l/rvSxqkasnL8UZOPDHJFpKuZtMFBixi/V7Hf+78cabzLBhw4KBQR2v971bb10X6C++TGsl6o758sspLnK93vninx29xyqoW/PmLZwLo/gyEm2H+wG5hEAgAAEIQAACECg/BHJz0lN+ONjo1amDtNjpNS5Ce/gFVx9OUtJJ9JI8zPqvTCV6MZPiLj7AQapjstnX2EZdTSX6OJKvKvnRDIv8hcrCRNfUp8917mXRTlV31mmyUEv2QRUuI5P1cDCXRPnr128QJMu/YFhkMeStaZ999hlzwAEtg93yuzly5Ci3fYIN5qSPxWwlVeADKaWkRF5zL+cmPEX43PLLOmfOXPub7SzjZJ0QVoL/88/fCcvId2I2bV518pYz+ohOZPHs6y0LS1lpZGu1mI/2GLZMTNcOdR126r67Zwo2ovYlxXoU4q2kpIxIpwAIW9jOnDkritNnXYa3jElUgHUVECSHP4BLo5/M5vmNqp75aLcB2GKuZHO/inmKYmcP9+mygp43b37SMqxLmGCf/m9qAC9e9P9MfXK2ErYsrV17zQyDdGVFzVU+f700aLC9X0243GGH1Pt1UNgvZaJC9Kzq/9eff8YqqqK4N7LW0wChylfgxYMOauVmbhx8cCv7LnGos+bToHJJi2aGnHba6cFglpSfr7zySsJZP5UrbxxUT8rQVP/nwn3dppumv67i1OO11143j1tfuJKBAwcknDUTVDTLFSlWvcj/erYiX/FeNAMmG9E7st5LGjSobxR8UIYDmYjeRc4991z300CW2t0HH3xgLUTfdn6E5f9W7+633Xab880fngmVqPzw8/P99z8kykIaBCAAAQhAAAJllAAK0LU3LmyRl+heJvrACisyZQnqrUETHR9O0wuwItRmax0XLit+XfW0fhnjk2O2/cudnLzLAX6NGmusES+55GKryP2PneLd3QV90gujHMzrJ4WoRsVPOOF4F+E82xdcVcT66IypT/yGr5/S586NVYDqY1eBgRQcQ8Gc9EK70UYbuSJeeulFNy1dG2eccbpLy+aPggCkY+g/gKXclOWOt6jx5xs9eoyLcDt+/AT3IejTC2mZTZtX/dVmJOkUqMqjgD7ZKkDz0R5nzJipajlJp3hUJtXfy+zZszL+IPPHJFv6emTK0Jdj/Z751VJZxlvXZFKJku4ns31+o6pnPtptJpwT5cnmfiUqJ8q0MGcfrCqT8sPHhfPXq1c3vFns9R9++D44xvfrQUKSlai5Ll26pk/V6bazwQFTSbhPSpYv2/qFGWd7b6TcVNDEU045NZg+vGjRIqPAefppsNj6nnYuM44//vhklxBpugZ8TzzxJPs+sUahrncI67vTDmitG7QJn7By5XUBBdMpQGXN6SUd9+LUQ+8VcjEjOfvss22AvP/500S6DFs76n9cNiIlsO6xl/j3IZ+u5UMPDS0SwFLvrZpllex+hI9Pt67+X4pT/RTcUG364osvce+MOlZWtHLXonfJZBJmEu4fkuUnHQIQgAAEIACBskMABejae6WXpuKKlJhe9OFUteqWfjPtUn6diqsAlZ+wdCLLQ1neZSpS4IVF/sFk7SkfhYrCGfabpBdcTV/SvkceGWbkZy8bqVgxdf3CU84qVixqxSn/XVKAyk/XqFGjbPTgNR9RPvr7jjvumJOiSlPtw3VIdI0VKqx7dMLWnvJbJSsTRQ+NF1lDKnL9gQce6KIWx/sPjc+f7+1s2rzqpPal67RBOtJW8S8b0T4Xibo92iBZQXXC9y1IjFtZf/11/YIsS6ISX49KlYq27/hzhKP9RlmH+PNksh2uSyb5laek+8lsn98o6xl1u82UdXy+bO5XfBlRb3vO6mN33rlxxsVvskniaeEbbbTOWi/jwkIZw8+ULLIzkai5brDBuv+J4enXieqSSZ+abf2iujdSIL377jvuHeL55583GhDUO49EA6v6/6jfm2++5fwwp/OzmYhDpmmKSq7/yd43+HHHHWfkqiZV/1+jxjqrSA34eRdIic757bdLg+RU73TFrccdd9wZuCiQ25ZzzmkfnMevhN0UyXerH1jTALAN5OOzpVyGZ/bMjptxk/LA0E4pdv37qWbHpLqfelfeYYcdQkcXb1XPq+6lZmXI13iq+6iS5ZpqxIjhlt85zvew6mkDIZquXbsmPfHGG1cO9oX7hyCRFQhAAAIQgAAEyiyBdVqcMnsJpVfx8Aiypj12735tzpX5++9/kpZhI98m3ed36ONJfr3kGymZfP31wmBXePqTT9TLaa9ePd1PSs933nnX/t5204n++OMPF4xC1hSanuitL/2xmSz9h0iyvJqK6qVevbp+NVjK6f3VV19tVBcFQ5ICVNMoP/nkE5cnF+tPFSAXAPqwSDVNz9dRHzxh1h07dgqUn7IwvOCCDmafffZ2/lXD0+hKW/kZwMxipUGD+mby5C/MwoWL0h69cOG6e5k2c5IMUbbH8DObiW8vf59Vtaj8o6ks+QnUNL3589P7F1u4cN3zGmUdVI+SkDDzqPrJVPXO9vmNup5RtttU11vW9omzt2R+88030yow8n19W221ZgaEzvPDD8syDjIUZb3Up3oJW9L5tPAyij41XF54Pcp7I8WU/jfrp2fy448/tpah75g33ngjcKMi34yaEdKt2zXhakS2/vrrw815551np/qvGayTdXbfvn3TukwIu0fR/4Cdd07uVij8fySZQj+beoQDKuk5SScarPYD1k2b7pOxAlTK6v333998+OGHbjaLAklmqjz1dXrwwaF+1fnWDjbysCLL5HvvHexKfuSRR2ygo+R+qf3pZWHapk2bIPja3Llf+V0Jl8uWLQvSa9SoGayzAgEIQAACEIBA2Sewftm/hNK7gvAHczigULIa+aiW8fvD1oYrV8b65ArnXbr0u/Bm0vV0fpzmz1/jc01T38NKORWo6VzhEW+9HCsar140p02bamRdKdEHRaZT/t0BoT9hpVIoOVidN29esB5m7BNVZylBJbIikSJU1qoSWb6ceuqpbj2XP5nW0QeU0rmkeJa1i6Ru3brm//7v/0ynTh1N06ZNi3D+/vt19zLM2x1c4H+8jzopslMps9XeU/n3y+Qyo26P4UBlYZ9lyeoiyxaJPqCiVD76eijKrHyLphJfB+XZeuuy9zEWfoZz6SdTMYrfl83zG2U9o2638ddXlre3376Bq74sAb0/4WTXo75R/vvyKWFXIMuWlY6/P1myefFWfH47fjlz5jo3HvH7ct2O8t54i0/VSbMGmjdvbhRw6KOPPrTTkO8Mqvr2228H61Gu6J2gXbt27l1Fsx3uvPMOc/3116dVfqoOu+yya1CVCRMmBuuJVnxgOrkuSPQ/Itt6yNWBAkam+oX9Q8vvqs+baGA7Ud192imnnOJXbdClboEroSAxxYqUrg8//HCQ49RT15UVJEa4suOODYPSXnrppWA93Up4QDudpXe4Hwj3D+nOwX4IQAACEIAABAqfAArQHO6RXqi8z7D3bWTbVJYbsiiU8rBu3XrWIuKEYLqQTh+ewrdkyTcJa6RpOxqhz0QUHCiZqIzZs2e73eEo6S+++KLZbbfdrIJlm8DpfnwZsna8+uqrguTp02cE68VZkUVp/NT78PE+mJQ+WsLTs8J5NA1eIkWsyhs5co0C9MADDwwitIfzF3dd/kWTiRSbXsm8++67B9nC9+eYY442W26Z2CWC7uXo0aOD46QICIuUbV6UN5Gsv376PImOiyLtyCOPCIoZNOieYD1+RUrz8BS9+P2ptvPVHvVR6T9+nn32WedGIVk9Pv98kpk4cc3Hr3zGhf275cq/ceNGwWkffvihYD3RytCh6/YriEjUkuu1pKtPVP1kuvOE92fz/EZRz1zbbSbPfvg6S2M9XXtJdw2NGjUOqv3008n/VynTHXfcYaNf1zDqZ4cPHx4cF+VK2MIrHBApynOkK0sKUD8t+MknnzRhC7TwsfK1OGTIA+GkSNdzvTf6f9W69VH2vWhbZ1Uoy89EIsWkV/rGK3TTtZ9E5cWnffnll0bR3qVAr1ixonnssUfdFOj4fMm2d9tt18DHtRSYyf4Py4JfsyEk8msaL7nU46qrrrKDqO+m/A0d+mBwynbt2gZ5TzzxxCA9kxUFl/TvWvKZ2b//LZkc5gbMVU8/iHvyyScH9zWjArLI1KrVQUbvhhJZxsYH80xWpAJeedlll+QWvcqj6fVewhbiPo0lBCAAAQhAAAJllwAK0BzvnfcjJCtETctOZq1y8803O0svWXxplD78ku+tLlQVffAlkt69ewfTmxLtD6dJYRKeluX36WPkhhtu9JtGL71eNMXLK/UUWCiZtWp4Ou5BBx3oDy/WUqy6d++R8JhXXnk1mMp+jvXZFHZGHz5AU7bqWitLyRNPPGGVwx+59fA1uYQs/9x///1m6tSpRY6WwrVv3+tduvxcdelyZZAn7A4g2QesMl95ZRf70j4lOG7lyqIfib4s+TlNJGGlebI8iY6LIk0fV36K4JAhQ4LgAuGyp0yZYm655dZwUrHW89UeZW3t75nu0S23JP7QU/uXGwgvJ50U+0GZK39FrPV+5e6+++6kgyfvvTfaKvdHumrIwqdZs/19lSJb5notmVQkin4yk/P4PNk8vzo213pG0W7TPfv+GktrmUl7SXUNJ598knUBUc9VX/3Hp59+mvBSZD1+zz33OJ+Rmv3QrFnzhPlyTZSyy8ukSZP8aokuNXPh2mu7uXNqcFD/I/y0bV8RKZl69Ohp5A8yX5LrvdF7jawgZf2p94nHH388YVX1DuD/RypqfLykaj/xeeO3pawUP/8OM2jQQBMe7I3Pn2zbzyTRe8BDD60bhPL5NXCpe+aVo/L7G5ao6hEuM1/rstC99957A9/nt99+u5sy7u9RovPqf/yBBx5k3n//A7dbxgC33Zb9//xE50iUJpcJJ510ktuldnTooYcZDRokE72T6736vvvud1k0kB+2eE10nO8H5MZhxx2z91eaqGzSIAABCEAAAhAoXQIblO7pi3f2m266yYSjcyY7WtNEFf2xJKRNmzPd9B99xA0fPsIcddTRVqnS3/l81IvX2LEfWj+VzwZWlZqa1KHDBTFVa926tQuIpAAE7733nlWkdnVRzDW96ZNPxhtN89ELuKZ+h6eVxRQS2tCH08EHH2IGD77XHHDAAW762YwZM2xE0c7OD5eyalq7omR6adiwodlvv/3MuHHjXIAeRc3s3btXoIDUx4ReMm+66WZ3iJSPqfxi+XKTLYcNG+aUwPLJpamnshR8/PEnjI88K2usVH7B9KElZeeNN97kAiHpPHqxFcsoRIrqY489zn6ADzItWrRwTv31IdSp08Xm888/d6fo1KlTYAGsBFkpydpErBSQSYruY4891im61BZkKTJs2MP290hMFTV1Pl5kPSqLYrWHAQMGOoWBrBa84iBsXSrlePv27Z0vvWw+9OLPnW5bH+t9+17nAkvoY11tXn7WpJSuUGED18buv39IkQ/4dOWG9+ezPV588cXWIuhx68P2KxfUS1bXPXr0MApSpfsk5fTll18eKGZk/SmLpbDkyl9tVfftkksucQMjLVq0dNFpDznkYGehqjbx5JNPuTz+vPqQ95YvPi2KZa7XkkkdougnMzmPz5PN86tjc61nFO023bPvr7G0lpm0l1TXIKVC//79XJRwPW+yGLzuuj7OdYmeCyn4pPQfMGBA4B5Cz8nmm1fJyyXr/4+sL+WX9KOPxuXlHJkUquA8gwff5wYA9T9fEbk102GnnRrZSNazzbPPPhf8/86kvGzyRHFvzj67nfW1+LI7vd4XtthiS3P00UcFfZcsPjVY7JVrRx11VJGqpmo/RTLHJajf1HuMRINMEyd+6n5x2YpsyoKyceN11smdO19q/088ZhQESQrVX3/9zVqVnu3aoSw/pfzUO59Efk7j34eiqkeRiuYpQQMBDz74oJEiVy485LdU0/81+KfZQfrp/VNuTOS/+plnng2UzHqvffTRR4od2DPbS7n55pvc7AzNZtL7rnyva9BL71yq5/bb7+DeY6dPn2YVtO/bd7Z1Axvqe8KzORLVYdy4j12y3p/9jJFE+UiDAAQgAAEIQKDsEShTClApyDIRvcSWlAJUijhNQzr33POcwkTToJs3b+FemmRtFp4CrI+7F198wcj3Zlj0giXLo2uvvdYlyypGP5XtrQs0fb5fv5vNCSfEWqKFy/Hr3qH9SSed7BR3sqYIK9kOO+wwI4vUeJFy7qCDWpklS5bYj61n3W/zzTe3SufKzjm+n+akj8Wnnko+4h5fbvz2WWe1cVPA5TdKP1mMaOqhv1Z9tOhFvGrVqvGHxmyfdtppTiHrj9NHSKroozEHp9iQElMf3LKCOOWUU51SU/dIShUvsiDwloQ+TR9tUgzKh5ZY6aOpS5er3IeRLHJ9W9C91L3Wx5Qk0RQuTfOSkk5Wu7169XL5evTobsvr4tZlCaiPVU2JlAWGfqr3kiWLgw9NlzFPf9SGXnjheTetUD4s9fGhn5c1StK+7v5K0Ri2GvN50i3z1R7FSdPzZYUppYf8tuqnYFbiKasSL/vss4+9hoeKMI2Cv5RtUnJIwS1lQNu2bZ0PW/UPega9qL4aVDn44IN9UqTLKK4lXYWi6CfTncPvz/b51fFR1DPXdpvu2ffXWVrLTNpLumtQ/3HdddfZAawbnbJFg376qe1L4RQWPSepBsPCebNdP+KIw11fIMsvKX+8BWK25WVznNreyy+/ZJU5HV2wFg3E6H9JWHbddRdzzDHHuIE/pedDOZPrvZEbGikHpfzUVGL9n9O70NZbb200yOv/D6r+ypfIGi9d+9GxyURWw170XhH+v+TTEy1liRpWgEpJpvecNm3Ockr5Pn36uABKUvZ98806V0VSummgNF6iqkd8ufnclm/1unZwWwGDNNtH15nKzY3q0qxZMztAP7TIe20+66l3Lb1Ln3NO+8BNzaRJk41+yUTvSzfccL0duD0tWRaXLqWq920edveT8iB2QgACEIAABCBQZggwBT6CW1XPTud766033ZRZ73xeShT/oq/pRbLQGzv2g8DPUvxpO3a8yCphnrMvn3WCXVLsyepTVn2jRo0022yzTbAv1cqtt95iX/RucAodjY575ac+QBQEQC/1UmrGS82aNV209w4dOgSKRCn9ZIkohZ6uTdPCFBF+++23jz88420FgBk1apSzOJWiTB9JulZxOuSQQ6wyb4xJNC0u/gTbbruts3D16blGf/fl6EO0Z88eVkl8k/PjKYtOr/wUI01ZHjLk/oQfyRdeeKGdSnZP4IdU16WpYmoLUuxKifnBB++7IE7e55b8Bsb7Ab311ltddNPwfQoHx5DV0iOPDHMfK77eqqcPcOXT8rk86KCDXBCqyy7rbO9DS2cZo3urD4zXXnvVWhxfYtvNGv+msugtruSzPcraRe3s4os72Xpv7qqm58QrP/UcSkEzYsRwo3rESxT81c50jjfeGGWth5s45acs4rzyU0oD+ZJ96623AmV5fD2i2I7iWjKpRxT9ZCbnyeX5Vfm51jPXdpvu2c+EQT7zZNJeMrkGWdiNGTPaKVDU90vCyk+52dDgw8CBA/N5Oa7sww8/3C3VD8tirLRECs1hdnbEoEGD3P9aDZZp4LRlyxZWGdrV+TwMu4XJpl/N5NpyvTey8NQgk3cvIK4KTKb/g7rXSn/iicedJaie13jJpP3EH6NtnSfep2iifJmm7bnnnnaw9j0XFV31Vv/slZ8abNVA+yuvvFxEER11PTKtbxT59L/o008nuhlEWk8kmonQuvWRbnaT/tfHD+onOibqNE2Ff/vtt5ybjBYtmgfT9+PPI8txvRuOG/eROf/88+N3F9l+5513grT//e9/wTorEIAABCAAAQiUDwLrrVq1MnGUlfJxfaVyFbLm0nRp+WZU0JW6dkS9OJYaslrQNOtq1aobWXxkMu21f//+VmHXz13vhx+OdZYMUr7pY0Aj2npZ1Ael/9BMB0ZWMPpgkRWAlJ+77rprQkVQunLS7RejCRMmuClJOodG6Ysjp556mlUgveGmMI4f/0lxDs04rxjKilEKy/DHZ6oCZLkpZaSOq1ChorUCbZwwQmyqMrRPH1xz5851CmkpsBO1BSln9VEmBXm+PojT1TPZfrV9WYjKelEWo9lKvtujpt3qmZXoWZGVc6IP80T1j4q/BiumT5/hnjtFnlUdvHI20XnzkRbVtWRSt1z7yUzOoTzZPL/hsnOpZy7tNpNnP1zP0lhP114yvQYpjBR8Zdas2XbQaQv3P1P9XabPYK7Xrv+VmrmhoDUadHj00UdzLTJvx993332BZagUQGFXNvk4aa73Rv+b9B4hVyMatFQAOFlpZyKZtp9Myso1jwYYp06d5v6v16mznRsE1gB1eRc94/LHq1ksG25Y0f1/1P/I8OBsITDQu6T6EFlvajBTAwcKcKb2psHETEUuj2R9fdRRrZP6sM20LPJBAAIQgAAEIFB4BFCAFt49yapGiRSgWRVUhg5aunSpUdRaKWj79u3rLA7LUPXLbFVlIfF///d/7gNQbgf0oZFI5Hd23333c7s6deroprsmykcaBCAAgdImIL+bmlIrZcm0aVOzGrDK5Rq6dr3GKmy2cjMj5MYmmSi6uXxsavaEBsfy5Rs12flJh0B5JSBfoQdaFw6S96z/9WQWsC4DfyAAAQhAAAIQKJMEMh8WLZOXR6XLMwFFLZXyU1ajUU1/L8+8orw27xdMliF9+vQuUrQsdy655NIgvVWrVsE6KxCAAAQKjYAC1vlgSApiJxceJSkTJ050syFkVThp0ucJfWC//fbbQYAhTc9G+VmSd4hzlXcC3vL70EMPRflZ3m821wcBCEAAAv9aAvgA/dfe+rJ34QpYo+nu+ghUcIi77rrbXcQZZ5zh/GuWvSsqmzVu0qRJMP3NB+ySmwUv8umq4E+ffLLGJYH8vbVs2dLvZgkBCECg4AjIorJ79+6uXgpg8/vvv5doHRVcSqJI24pqLd+/3iex0vV/79JLO2vViQL1IRCAQDQE5KbhiSeecJbV3buvCUgaTcmUAgEIQAACEIBAIRHAArSQ7gZ1SUlASrbTTz8jJo/8ml53XZ+YNDbyS0DBnAYPHuyilusDXdGbJfLZJ8tPuSaQTz2JfL4NHTo0Y9+z7iD+QAACECgFAoqCfeyxx9jANq+64CoK5lNScu2119oATB/YADSfuoE+DfbJZ7f6UPnRDCtDFXhO9UQgAIFoCNx4401mxYoVLrDV7rvvHk2hlAIBCEAAAhCAQMERwAK04G4JFUpGQB+CYVHE8WeeeabgAv+E61he1xUoRH7omjdvFlyiopcrirOUn/IL2r59exdpXdNKEQhAAAJlgcAdd9zhZhQMGDDQyJq9pESuXF588QVz1VVXBVPbFUxPfj698nOvvfZy0dP79OlTUtXiPBAo9wSmTJlinn76aRcotFu3a8r99XKBEIAABCAAgX8zAYIglZO7rw8l/SQbbbRRiUXPLUl8si5UlF5Nhdc0bClAkdInsGjRIhcZV1PIKlXayFqC1jS77rqri1xf+rWjBhCAAASKR0BWmJMnf2EDEu3rlCLFOzr33MuXL3eKT0Xe/vnnn21wpBqmfv0GRtHHEQhAIFoC48ePt++WU43cUDBgGy1bSoMABCAAAQgUGgEUoIV2R6gPBCAAAQhAAAIQgAAEIAABCEAAAhCAAAQgEBkBpsBHhpKCIAABCEAAAhCAAAQgAAEIQAACEIAABCAAgUIjgAK00O4I9YEABCAAAQhAAAIQgAAEIAABCEAAAhCAAAQiI4ACNDKUFAQBCEAAAhCAAAQgAAEIQAACEIAABCAAAQgUGgEUoIV2R6gPBCAAAQhAAAIQgAAEIAABCEAAAhCAAAQgEBkBFKCRoaQgCEAAAhCAAAQgAAEIQAACEIAABCAAAQhAoNAIoAAttDtCfSAAAQhAAAIQgAAEIAABCEAAAhCAAAQgAIHICKAAjQwlBUEAAhCAAAQgAAEIQAACEIAABCAAAQhAAAKFRgAFaKHdEeoDAQhAAAIQgAAEIAABCEAAAhCAAAQgAAEIREYABWhkKCkIAhCAAAQgAAEIQAACEIAABCAAAQhAAAIQKDQCKEAL7Y5QHwhAAAIQgAAEIAABCEAAAhCAAAQgAAEIQCAyAihAI0NJQRCAAAQgAAEIQAACEIAABCAAAQhAAAIQgEChEUABWmh3hPpAAAIQgAAEIAABCEAAAhCAAAQgAAEIQAACkRFAARoZSgqCAAQgAAEIQAACEIAABCAAAQhAAAIQgAAECo0ACtBCuyPUBwIQgAAEIAABCEAAAhCAAAQgAAEIQAACEIiMAArQyFBSEAQgAAEIQAACEIAABCAAAQhAAAIQgAAEIFBoBFCAFtodoT4QgAAEIAABCEAAAhCAAAQgAAEIQAACEIBAZARQgEaGkoIgAAEIQAACEIAABCAAAQhAAAIQgAAEIACBQiOAArTQ7gj1gQAEIAABCEAAAhCAAAQgAAEIQAACEIAABCIjgAI0MpQUBAEIQAACEIAABCAAAQhAAAIQgAAEIAABCBQagQ0KrUKp6rN06VIzZ85s+5tjfly2zGxXp45p0KCBqVevvqlcuXLCQ5cu/dbMmDHDbLjhhqZp030T5ilriatWrTJvv/WmqWuvu1GjRjlX/++//zaLFi40ixYtMitWrjC1a29rf7VNpUqVci47kwKmTZtm5s6dYw4//Ajzn//8J5NDXJ50x/3666/mr7/+yri8zTff3Ky33noZ5882o671i8mTzVdffWU2q1LFNG/W3OzYsGFGxf3888/m66+/Nt98s8RsueWW7l5ttdVWGR3rM2XbfrI9zp93wvjxZvmfy80OO+xoatas6ZKX2ef4yy+nuPu+//7NfFaWeSZQXvpStcl5874yC23/Va1aNdOw4U6mYsWKeaVXnGewUPugvAKicAhAAAIQgAAEIAABCEAAAgVIoEwoQJcvX25uv/1WM2b06KQI27ZtZ85sc1YRBdZkq2i6pX8/93H85FPPJD2+ODv++ecfM2L462brbbYxe+21d3EOjSTvk088bp6wv1NOOTVnBeiYMaPNgw884BRq4cptvPHGpl27s80xxx5XLKVkuIxM1n/8cZnp2eNa88svv5hDDjk043Nlcty13a6xyu/pmVTD5Xn+hRfNZptVyTh/NhnffPMNc9utt8QcWr9+/bQKUCkKhz38kHnjjVFm9erVMcfvvsce5uKLLzXbbbddTHqyjWzbT7bH+XoMHHi3WbJkibn8iivNEUcc6ZJnzpxhru97nVO2v/racJ+VZZ4IlKe+VH3XkPvvM1Lmetlggw3MHnvsabpec03kz3I2z2Ah9kGeFUsIQAACEIAABCAAAQhAAAL/JgIFrwD99ttvTc+e3c08ay0nadJkd2eduMmmm5gfvv/BTJ8+zVn/PProI84y9Oqu15iNNtoor/fwmq5Xmc8//9x0794zr+dJVPioUSOd8jPRvuKmvfbaq2bggLvdYVLCNdl9D2s9VcFMnTrVWSgOHnyvmTVrlhHTfIiso6QgkPKzOJLtcanOIcXJBhtUSJUl531//PGHufuuO10521jlefMWLV1bbdx455Rl67jRt7DoAABAAElEQVQrLu9sFi9ebCpUqGCaNW9uatWqbdv/92bs2A/M5599Zjpe1MHcc+9gU6dO3ZRlZdt+sj0uZWXYWaIEylNf+u6775h+N9/k+O1kreD3tErPP//807z/wftm/PhPzOWXX2Zuvrm/Ka51dLIbEuUzmOwcJdEHJTs36RCAAAQgAAEIQAACEIAABMo7gYJXgL7w/HNO+bn55luYfv37m/r1G8TcE2eNOWK4GXD3XU4ZJKWeLCPzKQsWLMhn8QnLluXWww8NNS+//FLC/cVN1HT3+6yCUyJe7c89z6y//jqXsCNHjjB33nG7efvtt5zCrZmdph2lTJ40ydxxx21OqVeccotznNqLpvcnE01Bv6br1S5Pp4svMbJ6zad8++03RlN2JV27djONGjfO6HS6T1J+asr7bbff4aa9+wN137pd09W5hpBCaPB9Q/yumGW27Sfb42JOnmKjUaPGpn//WzO2/E1RFLvSECgvfemPP/5o7rj9Nne1J550srnggg6B5X+7s88xXbpcYWbNnGmGDn3AdOvWPQ2VzHZn+wwWWh+U2dWSCwIQgAAEIAABCEAAAhCAQPkjsE7jVaDX9tFHH7qanXveeUWUn9ohpd1RRx1tjjhyzZTaD61FXHmTTz+daC44/1yn/JSPyk022STnS/zow7FOGSdLwnPanxuj/FThmqK8zz5N3XnGfhAdU2cFaZXVUlJIqbfZZptldC3ZHFe58iZuGqymtcf/ZO151513OuXnkUe2Nq1bH5VRPXLJJMWNRH5OM/X5KQXumPfHuOPOO++CGOWnEuW3tPNll7n98o2rKebxkm37yfa4+POn2q5ifaDuseeeZrcmTVJlY18EBMpLX/q+fR5WrlzpBgTOtQMAYb+9sv6XOxTJxAkTjAbIcpVcnsFC64NyZcHxEIAABCAAAQhAAAIQgAAEyiqBgrYA/eWXn42mbUqSBTny4Fu0OMC88/bb5js7Lfj3339Pm98fp6WCWnzxxWSzYP58pxCrZ6eDK5hG9erVw9nsVHsFn/k2sOKb+9VcU9kqI6tXr1Zk6vGUKVPM7NmzzPfffWeq2yA1dWzAJgV/SXcdMSe0G1JqyUpRoiAf11xzrXnmmafdNE+XmOWfmbNmuiN33mXnpNZ3DXfayZ1HlpJhmT17tvnpp59sYKmKZtdddwvvSrt+6y39naWuMkrxeFCrVuaqLlfm7bhkBd97zyAb9GmhmyJ74UUdk2VLmZ5pu9EU/5nWIm3WWuZS2n9mp61LatasUUSpGT6prI1X2Km9kt2aJGatdqUypeyRq4itt946KCLb9pPtccGJM1xRO1J7klJ4D+vL1ItPr1JlM/fcaHqz/LnKPcP6dhBg+x12MLvssqsLbuaPiV/+/vtv1kXGdDN3zlwXfEluHnaybbpatdjn2h83ZcoXdhr1ClO3bp2EeeQDcu7cuaaidUMQVthOnfql+eOP5a5sKeB0n6d++aX52d73bW1AMbksSOWWQ+1D07YXW6tseXets10dG9itngvy5uuW67Kk+tJp9v6oX5QivmaNGqaetdhvaAN8aXp3WIrTl4aP07oCtB13/AmmatWqRcrVfllKS8RV7chvK00DKWpDknp165qqtk9NJ7k+g8nKj6IPSlY26RCAAAQgAAEIQAACEIAABCAQSyD2qzR2X6lvyWpv2223dVGvX33lZaNp2GFrn3AF9957b/P68JHhpLTrsux56cUXzOOPP+Y+jMMHSCGjoEqnn35GoCAcPny40TRSL089+YR5yjzhFHmXXX6FS5aVX6+ePRIG39liiy3MlV2uKlY0+lWrVroAMQpGdOqpp5lNN93UKUB9HbJdXnttD2uFeXWgzE1UztK1yufqW8UqjB5/7FHzobUgrWEVHI89/mSiQ5OmyXJLPvvatj3b6J7Jh2smku1xicr+0iqnFIxIcvEllxY72n1x280cq+C7tlvXoCqaBu+3NYW3Q4cLg33xK1KEjRj5hlPSy9ozkXxvlf7e0i3+XmXbfrI9LlH9UqXp/ut5qVSpkgkHQZJSsU/vXs4K+bzzz3fT/KWADMt2VlHYs1evIoMPyiPfqHLhICVYWKSIO/uc9uYkyz3s8kF5pJyPD9IUPnaS9ft78803OoXa08+s6wfkR1cK45v79Tcvv/SS+fjjceHDzKaDNzU9evaOUfD6DK/Yfm3ogw84/5U+zS8VFEyuGYo7aOKPDy/z3ZfOmzfP3HvPQOcbOXxerTdo0MD5Ea5Xr36wK5O+NMgct7LnnnsZ/ZKJnm/JtjYoWFj5qTTdX//sdbnqanPYYf9TckrJ9RlMVHiufVCiMkmDAAQgAAEIQAACEIAABCAAgeQECloBqmo3a97CPP3Uk+7D+qILLzDHHne8VZztU8Q6M/klJt8jRZ6iqUv237+Z2XuffVyQGfmZfOutN82jjwwzM6wF2fU33OjyNG26r5uyrfrIN+KBBx1kLbXqm+23397t1x+v/KxrrYuOOvoYZ7UpBdhHH33kLEJ7dL/W3Dv4/phjgoMTrGiK+uNPPOmmcCfYnVNSxYoVbdCjignLkOXUB2vdCTTaqVHCPNkkdux0sQ3gU6vYh2Z7XPyJpCgcZKORS/773/3Nfvv9Nz5L2u3itptt7PXKzYAsTt984w2nUG/b7mx3np0yYCulfzLlpwoZPvx1V9aGG27o2qPbWPsn2/aT7XHhc0exLkvBK2xAGwV/OvnkU0w1a5WtZ1LToBcsmG969+ppHh72aMzAiAY1FMBL0nTffc3+/23mLDC//HKKef3118yDDwwxX1vLWg1GRCm333arkTL68MOPMC1atjTLrVWo7s1nn31qbryhrw1SdZ8bNPDnlKL0nkEDnSL2WDvAsfMuu5i/Vv1lJk6c4AYY5H9XFot9ruvrD8lpma++9Mcfl5kuV17ulM3y1dz6qKOcxfsS6+LijTdGOeVwp44XOf+1PuBXJn1pcS9WffK4cR85hbKOlYV5VJLLMxhfhyj6oPgy2YYABCAAAQhAAAIQgAAEIACB1AQKXgF6tg1qsdwqAWQppemnsuqSyLpnDxu1XFNRZQ1UXL+Ymk77lFVkSjpZpZwUq17+97/DbYTuFs4CTUqKMWNGm5YtD3AWXJqm+4oNRKSP7Wb7NzcHHHigP8xNkVe5sjK7ru/1diryNm6flKunnna6aX9OO7N06VKrBBtlFaAXB8elWpHFZ0nL6tWrnWLmD+tKQFarra2P1bCc2aaNObJ165TTj8P5w+vZKD91fLbHhc+tdU01lrWe5ORTTnHL4vzJpt3IUlaWxBOsT0KvANV2FKLp1t4q+YwzzgyslX3Z2bafbI/z541qKYs9WXredfeAmGd8n6ZNTf9+Nzs/slIweovAH374wTz88EPu9AoQdZp97rzI3YKeV7mUkGJOfoO9Qs7nyWUp5WeHCy8yJ554UlCMpr/ffNONrg+5rk9vM3DQPcE9euedt12+w2x/I0tPL4cceqhT1CqwmxR6sirXc5ir5KsvlS9dWdpq0KefDWgVtrpUv9qnd083gKXrkRLYuztI1ZcW51q/slPupfCe8sUX5q+//nLKcim31Y/Hi9xD3HDjTS5ZLhGikHTPYPw5cu2D4stjGwIQgAAEIAABCEAAAhCAAATSE1g/fZbSzaFpqlIOaLpieAqlLLheffUVc8P1fc2pp5xkru97nVm0cGHGlX3qySfdtOHGNhJ3WPnpC5B1YKtWB7vNYWsVKn5fsqWULxLVeeONK8dkk6Vl9+497VTYXi5oU8zOAtsYcv99ZvTo91ytOl92ubN6DVdRPidlwdWkye7h5DKxPsK6MZBI+bGL9SFZXMlHuyluHXz+RdZnZPdruzk3BjvsuKM5xbpIKI+iKfDxAxwHH3xI4LpgvvXd60WDGn9af6E7WB+hchkRL/JZe8Ray8DHHn0kfndO21LUHm99U4ZFyr5zzzvf9QnyCRz2p+v7i002ie0rdLyCkF1xZRc7rf6W4DrD5Wazno++VIMJPrjSBR0uilF+qo4bb7yxueTSy9z1awBLg0lRy4wZM8zn1qeulJ8SMZ9p036wCul4UX3Ud+mXzBds/DGptrN5BnPtg1LVh30QgAAEIAABCEAAAhCAAAQgkJhAwStAfbXlq+3+IQ+YRx59zFx6aWfT3E6N9xHE5VNRU2IvuOC8IMCOPy7Zct78eW7XYYcVtRLyx8gyS7LQKlZXrFjhk5MuGzVq7KaUy1+lpusrWJGsk7w0sspWWZJuZwMiFaJoaqYsqV544XlXPflAlfVqeREpnLx/xmOOOS6ry8pHu8mmInPnzrHTjq9wQV4UZKun9TEpxU95FAUkSySyrJWsDD2bs2ywKcne+zSNmRbvEtf+8cGW5tjgSFHKodZyM96vqMqX1WGDtW4y5syZHZxyjz32dOvPP/ecucFOkf/gg/ddADcl6l5qKr3qmiqAUlBYMVai7Evnr+1Ht7QBieTTN5HIj7O3tFW7jVqa2FkAQx4Yai1/H3FuDaTkfO21V03nzpeY72wQunxJNs9gFH1Qvq6HciEAAQhAAAIQgAAEIAABCJRnAgU/BT4evqaVy7emfpqqLYWH/PqNGjXSWcLddOMN5qmnnw2Uo/HHa1sK02/s1FpJDRuFO5mEo2nLf2P9+g2SZXXpsvK86qqu5pZb+jlfgApuol/VqtVsMJd93LT6vfbaO++KqoeGPmi+sBGtE0nnzpe7qarx+6S0VYCXsR984Ha1bdvOtDmrbXy2Mr0t1wNS8iqojKZDF1fy1W6KW49PP51o+l7Xx/mHVBvVtOOaNWsWt5gykV++P5NN//ZW1v/YfsCLnlPJyy+9aEaOWGPt6/f5pbcU/OmnH53CUe0hCqlZc+ukxdTYqobrq+QP2KyNu3P88ccbBVaaNOlzM2b0aPeTAlW+QPfddz9z4IEHma2scjtfEkVfumCt9a0ivqcStdMptk9a+HXmVvqpygvv865GlFbLRoiXO4Tzzz/XuRuRH+eofb3qPNk+g7n2QTo3AgEIQAACEIAABCAAAQhAAALFJ1DwFqCKuC3lXCJRYIodGzZcO1W0v8siJdVE62sxlSjAjxRhEm9Fmij/pptuEiTHR5MOdsStyMfg3QMGmkMPPSyI3vzDD987Ba0CIF3cqaP5dm109bhDI9tcYN0DfDllSsLfH3/8XuQ8P//8s7mqy5VO+SkFzOVXXFnulJ9Slo8cOdJduyx7s7Gqy2e7KXJTkiQoer2mvSs4jiwj7x4wyFkYJsle5pOTBelKdGF69v1zqvu90m4n+klhurFVeuqnAD5RSZXNqyQtSlaJkp9+/inIU7nyJi5y/IXWb6im7EvUL30xebIL1NT2rDMDa+zgoBxW8tGXLlu2hp+izKeSTdb6Mv7ll59TZYtkX3UbKOvoo9f4Lf7www8jKTNcSLbPYBR9ULgerEMAAhCAAAQgAAEIQAACEIBA5gQ2yDxryefsds3V1tLmU9Pq4INN167dUlZAlpWagj5t2lTzyfiPU1r4VbXTNRWoSJZgClwin5aJZOnSddMnq1RJ/YEfPn777XcwV13d1UjhoKA548ePNx+PG+eiwGsKrIKwPDwsWv+D4fMrOn2DBomtVatXj7UoW7Jksel2TVcXTEZKQfko3cdOHy5v8rm1tPvmmzVWv145UtxrzHe7SVcfRZ9/dK3fSvmo7XZt98j8Q6Y7d1nYL2vRzTff3LkFuMS6ydAgRDay+p91FqXh4//8c3l4s8j6j8t+LJLmE/xU7AZxVuTqh06wQZP0kzJ24oSJZvyET1x/ISX3/fcNNltusWXK/syfI9UyX31pjbWWx+pHU8l3NvibZLNi9KOpytOgmJTFlSpVSpitTp26Lv3XX39xA2jFUaQnLHBtYi7PYBR9UKq6sQ8CEIAABCAAAQhAAAIQgAAEkhMoaAXolltWddPcP7JWPPrgTfcRu8EGa30gJtZfBBRk5agpmV9//bWRtaSUSYlEgZYksjTNJGCGFJ6LFy+2H+Z/G32Ay4+ffN/p167d2eapJ59wEao1TVcBmzRdMx+iqbOZyNKl35ou1vJTyolq1aq56MjppvlnUm4h5pk4cY1V8DbbbGNq1942qyrmq91kUhkF7HnMKkAlx59wounQ4cKE/iYzKas859EzJUtducZIpgDVfvlirGndX8gK08uGG27oVleuSmxx7oMW+fzxy8V2MCGRyPLPT81XsCovsoZcsOBrs6NNU9+2hVV0KgK8fr/++qs5t/3Z7lrGffxRzgrQfPWltWrVcpeja9eAkhS6iUT9rESuAHKVq6/u4oIenXraaebcc89PWJxXyMo3abr/GwkLSJCY6zMYRR+UoFokQQACEIAABCAAAQhAAAIQgEAGBNbPIE+pZZHlp0SWUIMGDUw6FV55FI14ip32LVGk53Sy225NXJZXX3k5abnPPfesy7PLrruaTddO4VSCFJsSTbkNy4MPDHFKi2u6dk1YZssDDgyy/xkK3BIkluCKlDI33HC9U37Kz+Cddw1I6+O0BKsX+alkGSypW7deTmXn0m6yPfEnn3wcKD/Psn5ZL7qoI8rPJDD9s//2229Zi8qiFplq9zfdeL0LUtbhgvOdlbYvapNNNnWrilYeLxqAGTv2g/jkmG35HPX+RcM7dNzStRaQ3tpcU/VPOfkkc8Xlnc2IBL5K1d/Il6VkxZ/pA7CFz5doPV99qazupfT84/ffE16H6qL2u2DBfFet/+4fO9iUrC9NdA0+rV69+m519HujE/azugfv/d+7Lk/DHRv6w3JaRvEMRtUH5XQhHAwBCEAAAhCAAAQgAAEIQOBfSqCgFaCa1t6iRUt3a0aNHGEut8oCRUr2PjQ1BVIWl4pafuklnZy1qCIOy4IqnbS1FpnyAaipqQpatHz5uumtsuS8z0ZD1/R1TatVQKCwVLJTxSXT7X4pVLwowrtEPj+feurJIh/nzzz9lNsvhWOyKeouQwn8Ec/p06a5M53T/lyrZPnTKKBJot+iRYtiajTSHnvvvfcYTQctC6J75KOD161bN6cq59JusjmxFG/3WOW/ZOeddzYtDzgg4T3y9+23337L5jTl5pjTTjvdbLnllkYcFBDN+6jUBaq/eOH554ymIkuOO/6EYDBD240bN9bCKFCNAvZ4+dM+G+ojNMiSSqTkHDjw7hglqCKFD7Z9iUTKaz+QIt/De+y5Jgr807avkCuKsKhfGzNmtEsKKw1lhapnT79pa5/f8HHJ1vPVl9awwY9OPOkkd9phDz9kJlh3H2GZNWumGXD3XS6p6b77FhmcStaXhsuIXz/88MNdvyyXFvfcMzCGt+7VXXfeYaTEVt999jnnxBz+/fffBfymT1/T/8VkSLARxTOYTR/0xqhRrq6yPEUgAAEIQAACEIAABCAAAQhAIDcCiecr5lZmpEfLJ+WwYQ+76eNSYin6tWSTTTZxCkZ9nHrZfY89TM+evTOa8qjI0hdffIm5847bXfRlBR7ZZZdd3bFffjnF+ov8xn1AX3fd9aZJk939KdyyXr16RtPjZT0qRWLTpvuaXr37mEZWgXK0jU7/2muvmicef8wpW2TFJaXHjJkzzLyvvnLld7BBT0pTpAgaaiPFe+nf72a/mnCp6fFPPvVMsE/+TD/8cKyR8qMsRIqXtZ0UI5I6OSpAc2k3AcBirAwf/rpVji1xR3z55Zfm/PPOTXm0AlgdccSRKfOU550KNnTZ5Vc45eckG11d08hlFapI7xMmjDcK+CVp3ryFOd4qQMPS+qijzauvvuLayhWXX2bq2ue8ig3uM3Xql07JdtrpZxgpK5OJ/I+OHDHCTc/WOWWBqjqoj2rV6mBzVtxASqdOF5tLLu7klLTt2p5lttuuju2DdnF1HD/+E3dO9Wl+EEjnVVtWhHuJ+qFGjRq59Uz+5KsvPeOMNvaaP3cDRt27d3N10nO2xCpxZZUvi8y99t7b9OrVp4jlcrK+NNX1yAK0U6dLzF133eF4T7IKbVlmr1i5wgWQ0vR3uavoaPl6a1Ff3s8/r+O3/fbbm512Ss8vimcwmz7o44/HuQE/9b/xbcdfD0sIQAACEIAABCAAAQhAAAIQyIxAwStA5X/znHPam/r2o1dT0mdaRaLEW7pp+mW9+vVNUxu4R8o4P6Uyk8s/5JBDjQIW3W0/pGVN9f77Y4LDFJW5/bnnGVlOxYsUF7L2mjljhlNuzJv3VZBFH90KDPL8c89Z/30/OkWhdqqeO9rpmJ0vuyxp0KWgkDyvSKGmD/J/iyxb9kNwqblOgVdB2baboBLFWJkxfXoxcpNVBPbb779myANDzd133+mUkePGfRSAkZLy5JNPtdafxxfpK+QXeNCge621Z3/Xz2jAQlLTPs/yNdnYWuCmUoCeaq1PZUn+7DNPG0UKl8gK8SgbkfzCCzu67fAf+aK97fY7jSwnpezSNHE/VVyK9mOPPc71QcXp08Llx6/nqy9V8LS77h7grlt99NSpU91P59c+KeQ16JPIF2eqvjS+/uHtI1u3tj6Ua5lBAweY+dZyXRazXnbaaSdzaefLXN/u03JZRvEMRt0H5XI9HAsBCEAAAhCAAAQgAAEIQODfSGC9VatWrpvDXQYIKHCIpsDLkkfTSGVBJCVDriIrrfnz55nlfyw3NbeuabbKIFiHrAoVublq1WpFPu41jV7T66Uo3WijSs73ZBT1zPU6OT5aAtm0m2hrQGmpCMj6cKENOKbBCFks67nORKGoAZavvprrgqWlC4B20YUXuOnx8s2qAFV69jX1/a+//rZWnds569NUddQ+nU/9mgYmdExVG7wn35KvvlTTzL/+eqHrnxUkKVmk9vD1pepLw/kSrcvNgZSglWwQq+3q1MmId6JySIMABCAAAQhAAAIQgAAEIACB8kugzClAy++t4MogAIGySCBeAVoWr4E6QwACEIAABCAAAQhAAAIQgAAEyjOBgg6CVJ7Bc20QgAAEIAABCEAAAhCAAAQgAAEIQAACEIBA/gmgAM0/Y84AAQhAAAIQgAAEIAABCEAAAhCAAAQgAAEIlBIBFKClBJ7TQgACEIAABCAAAQhAAAIQgAAEIAABCEAAAvkngA/Q/DPmDBCAQDkmoMBFCny08cYbmw1tIB4EAhCAAAQgAAEIQAACEIAABCAAgcIigAK0sO4HtYEABCAAAQhAAAIQgAAEIAABCEAAAhCAAAQiJMAU+AhhUhQEIAABCEAAAhCAAAQgAAEIQAACEIAABCBQWARQgBbW/aA2EIAABCAAAQhAAAIQgAAEIAABCEAAAhCAQIQEUIBGCJOiIAABCEAAAhCAAAQgAAEIQAACEIAABCAAgcIigAK0sO4HtYEABCAAAQhAAAIQgAAEIAABCEAAAhCAAAQiJIACNEKYFAUBCEAAAhCAAAQgAAEIQAACEIAABCAAAQgUFgEUoIV1P6gNBCAAAQhAAAIQgAAEIAABCEAAAhCAAAQgECEBFKARwqQoCEAAAhCAAAQgAAEIQAACEIAABCAAAQhAoLAIoAAtrPtBbSAAAQhAAAIQgAAEIAABCEAAAhCAAAQgAIEICaAAjRAmRUEAAhCAAAQgAAEIQAACEIAABCAAAQhAAAKFRQAFaGHdD2oDAQhAAAIQgAAEIAABCEAAAhCAAAQgAAEIREgABWiEMCkKAhCAAAQgAAEIQAACEIAABCAAAQhAAAIQKCwCKEAL635QGwhAAAIQgAAEIAABCEAAAhCAAAQgAAEIQCBCAihAI4RJURCAAAQgAAEIQAACEIAABCAAAQhAAAIQgEBhEUABWlj3g9pAAAIQgAAEIAABCEAAAhCAAAQgAAEIQAACERJAARohTIqCAAQgAAEIQAACEIAABCAAAQhAAAIQgAAECosACtDCuh/UBgIQgAAEIAABCEAAAhCAAAQgAAEIQAACEIiQAArQCGFSFAQgAAEIQAACEIAABCAAAQhAAAIQgAAEIFBYBFCAFtb9oDYQgAAEIAABCEAAAhCAAAQgAAEIQAACEIBAhARQgEYIk6IgAAEIQAACEIAABCAAAQhAAAIQgAAEIACBwiKAArSw7ge1gQAEIAABCEAAAhCAAAQgAAEIQAACEIAABCIkgAI0QpgUBQEIQAACEIAABCAAAQhAAAIQgAAEIAABCBQWARSghXU/qA0EIAABCEAAAhCAAAQgAAEIQAACEIAABCAQIQEUoBHCpCgIQAACEIAABCAAAQhAAAIQgAAEIAABCECgsAigAC2s+0FtIAABCEAAAhCAAAQgAAEIQAACEIAABCAAgQgJoACNECZFQQACEIAABCAAAQhAAAIQgAAEIAABCEAAAoVFAAVoYd0PagMBCEAAAhCAAAQgAAEIQAACEIAABCAAAQhESAAFaIQwKQoCEIAABCAAAQhAAAIQgAAEIAABCEAAAhAoLAIoQAvrflAbCEAAAhCAAAQgAAEIQAACEIAABCAAAQhAIEICKEAjhElREIAABCAAAQhAAAIQgAAEIAABCEAAAhCAQGERQAFaWPeD2kAAAhCAAAQgAAEIQAACEIAABCAAAQhAAAIREkABGiFMioIABCAAAQhAAAIQgAAEIAABCEAAAhCAAAQKiwAK0MK6H9QGAhCAAAQgAAEIQAACEIAABCAAAQhAAAIQiJAACtAIYVIUBCAAAQhAAAIQgAAEIAABCEAAAhCAAAQgUFgEUIAW1v2gNhCAAAQgAAEIQAACEIAABCAAAQhAAAIQgECEBFCARgiToiAAAQhAAAIQgAAEIAABCEAAAhCAAAQgAIHCIoACtLDuB7WBAAQgAAEIQAACEIAABCAAAQhAAAIQgAAEIiSAAjRCmBQFAQhAAAIQgAAEIAABCEAAAhCAAAQgAAEIFBYBFKCFdT+oDQQgAAEIQAACEIAABCAAAQhAAAIQgAAEIBAhARSgEcKkKAhAAAIQgAAEIAABCEAAAhCAAAQgAAEIQKCwCKAALaz7QW0gAAEIQAACEIAABCAAAQhAAAIQgAAEIACBCAmgAI0QJkVBAAIQgAAEIAABCEAAAhCAAAQgAAEIQAAChUUABWhh3Q9qAwEIQAACEIAABCAAAQhAAAIQgAAEIAABCERIAAVohDApCgIQgAAEIAABCEAAAhCAAAQgAAEIQAACECgsAihAC+t+UBsIQAACEIAABCAAAQhAAAIQgAAEIAABCEAgQgIoQCOESVEQgAAEIAABCEAAAhCAAAQgAAEIQAACEIBAYRFAAVpY94PaQAACEIAABCAAAQhAAAIQgAAEIAABCEAAAhESQAEaIUyKggAEIAABCEAAAhCAAAQgAAEIQAACEIAABAqLAArQwrof1AYCEIAABCAAAQhAAAIQgAAEIAABCEAAAhCIkAAK0AhhUhQEIAABCEAAAhCAAAQgAAEIQAACEIAABCBQWARQgBbW/aA2EIAABCAAAQhAAAIQgAAEIAABCEAAAhCAQIQEUIBGCJOiIAABCEAAAhCAAAQgAAEIQAACEIAABCAAgcIigAK0sO4HtYEABCAAAQhAAAIQgAAEIAABCEAAAhCAAAQiJIACNEKYFAUBCEAAAhCAAAQgAAEIQAACEIAABCAAAQgUFgEUoIV1P6gNBCAAAQhAAAIQgAAEIAABCEAAAhCAAAQgECEBFKARwqQoCEAAAhCAAAQgAAEIQAACEIAABCAAAQhAoLAIoAAtrPtBbSAAAQhAAAIQgAAEIAABCEAAAhCAAAQgAIEICaAAjRAmRUEAAhCAAAQgAAEIQAACEIAABCAAAQhAAAKFRWCDwqoOtck3gdWrV5vFixaZmbNmmgULFpjq1aqbBts3MA0b7pT21Dp26tSpZv68eea775aaGjVrmrp165qddmqU9lgyQAACEIAABCAAAQhAAAIQgAAEIAABCECgNAigAC0N6qV0zu+//8707XudmT5tWpEa7NO0qenc+TKz1VY1iuxTwjyr9Bxw911mypQviuzfY489zaWXdja1atcuso8ECEAAAhCAAAQgAAEIQAACEIAABCAAAQiUJoH1Vq1aubo0K8C5S4bAjBnTTc8e3c1PP/1kKlasaPbaa2+zU6NGZs7s2WbMmNGuEvXq1TcDBg4yG264YUylli1bZi44/1zzyy+/mAoVKpiDDznU1LbKzoVff23eeedts2rVKrPFFluYIQ8MNVWqVIk5lg0IQAACEIAABCAAAQhAAAIQgAAEIAABCJQmARSgpUm/BM/d+dJLzLRpU81mm21mBt83xFSvXj04+9ixH5jr+vR2223btjNtzmob7NPKDTf0NWNGjzaVKlUydw8YZOrVqxfsnzNnjrms8yVmxYoV5qBWrUy3bt2DfaxAAAIQgAAEIAABCEAAAhCAAAQgAAEIQKC0CRAEqbTvQAmcf/LkyU75qVNdffU1McpPpTVr1txZg2r9ww8/1CJGPvv0M7d93PEnxCg/ldigQQNz7LHHuf0Txo93S/5AAAIQgAAEIAABCEAAAhCAAAQgAAEIQKBQCOADtFDuRB7r8czTT7nS//e/w03TffdNeKaOHTuZmTNnms2rbB6z/48//jC//vqLS6tVq1bMPr9RxwZCkvz66692mvzP1sqUafAOCH8gAAEIQAACEIAABCAAAQhAAAIQgAAESp0ACtBSvwX5rcDff/9tJkxYY5m5//7Nkp5MkdwTRXPfeOONnZWnprp/NXduwuPnz5/v0uUXFOVnQkQkQgACEIAABCAAAQhAAAIQgAAEIAABCJQSARSgpQS+pE77ww8/mNWr18S5UtAjyXfffWe++GKyiwZfzfoCbdiwodlttyZmvfXWS1it/f67v5EC9LXXXnV+Phs23CnIN3v2LPPqKy+77VQK1uAAViAAAQhAAAIQgAAEIAABCEAAAhCAAAQgUIIEUICWIOzSONUP338fnFYBkB56aKh5+qkngzS/svfe+5guV11tttxyS58ULM88s435559/jKbSK5hS8+YtTC1r7blk8WLz/vtjjKxMTzjhRNO23dnBMaxAAAIQgAAEIAABCEAAAhCAAAQgAAEIQKAQCBAFvhDuQh7rMGbMaHPD9X3NxpUrm4MOamWGv/6aqVGjhtljz71MZTu9ferUqUGApK222so88OBDZqONNipSo99//90MHHC3effdd4rsUxClq7tek/C4IplJgAAEIAABCEAAAhCAAAQgAAEIQAACEIBACRJAAVqCsEvjVC+9+IIZPPje4NSHHfY/c8mlnc2GG24YpI0YPtzcddcdbluWnBde1DHYp5XJkyaZ3r17GilBK1tF6j5Nm5qaNbc2ixcvMor8rkBJm2++uel7/Q0J/YjGFMYGBCAAAQhAAAIQgAAEIAABCEAAAhCAAARKkAAK0BKEXRqnkt9OWW5Ktt1uO3PffUNMhQoVilSlf7+bzTvvvG3WX3998+prw03FihVdnqVLvzXtzznbrFy50jRu3Nj07NnbVK1WLThe/kRlYTpt2lSjgEkPDn3IVKtWPdjPCgQgAAEIQAACEIAABCAAAQhAAAIQgAAESpPA+qV5cs6dfwLVQsrKQw89LKHyU7WQZahEvj4XLvzarevP888955SflSpVMtd27xGj/NT+6jaIUvcePd30d1mCPmfzIxCAAAQgAAEIQAACEIAABCAAAQhAAAIQKBQCKEAL5U7kqR5SUHqpXau2Xy2yrFW7VpC2cOHCYH36jOlufZdddjVbbVUjSA+vyHfoHnvs6ZK+mDw5vIt1CEAAAhCAAAQgAAEIQAACEIAABCAAAQiUKgEUoKWKP/8nD09H/+abJUlP+OfyP4N922yzThn66y+/uvQtqxaNDh8cYFdq1qzpNn/66cdwMusQgAAEIAABCEAAAhCAAAQgAAEIQAACEChVAihASxV//k9epUoVs80227gTKeJ7Mpm/YL7bJT+e9evXD7LVqVPHrU+ftsYSNNgRt7J48WKXst12a/LH7WYTAhCAAAQgAAEIQAACEIAABCAAAQhAAAKlQgAFaKlgL7mTrrfeeua0089wJ/zkk4/N9OnTipx89erV5rlnn3HpjRo1coGQfKaGO+3kVhdYBemUKVN8csxSPkM//XSiS/P5YzKwAQEIQAACEIAABCAAAQhAAAIQgAAEIACBUiKAArSUwJfkaQ855FBT3frpVCT3Xj17mjlz5gSnV9qAu++yitHpLkDS6We0CfZp5bjjjjdbb721S+vRvZuZHOfjU2X16d3bla2ASyeddHLM8WxAAAIQgAAEIAABCEAAAhCAAAQgAAEIQKA0Cay3atXK1aVZAc5dMgSmTZtmru/bx3z//ffuhNvUqmVq165tZs6YYX766ScjS9EePXuZFi1aFqnQ1Klfmh7drzW//fab27dl1aqm4Y4NzXfffWfmzp3jIsdr6vx1fa83TZrsXuR4EiAAAQhAAAIQgAAEIAABCEAAAhCAAAQgUFoEUICWFvlSOO/PP/9s7rrrDjNh/HizYsWKoAY1atQw57Q/17RqdXCQFr/y448/mvvuu9eMGT3a/P3338Hu9ddf3zRv3sJcdFFHU9VagCIQgAAEIAABCEAAAhCAAAQgAAEIQAACECgkAihAC+lulFBdpMBcsGCB+W7pUjs1vrqpU6dujN/PVNX466+/zKJFC82333xrtrKK01rWkrRChQqpDmEfBCAAAQhAAAIQgAAEIAABCEAAAhCAAARKjQAK0FJDz4khAAEIQAACEIAABCAAAQhAAAIQgAAEIACBfBMgCFK+CVM+BCAAAQhAAAIQgAAEIAABCEAAAhCAAAQgUGoEUICWGnpODAEIQAACEIAABCAAAQhAAAIQgAAEIAABCOSbAArQfBOmfAhAAAIQgAAEIAABCEAAAhCAAAQgAAEIQKDUCKAALTX0nBgCEIAABCAAAQhAAAIQgAAEIAABCEAAAhDINwEUoPkmTPkQgAAEIAABCEAAAhCAAAQgAAEIQAACEIBAqRFAAVpq6DkxBCAAAQhAAAIQgAAEIAABCEAAAhCAwP+zdx9gUpVnw4AfBJGuiCiChWJDwcTYkxjUKJZ8yfdpuiWJxpg/sWKhqVExRsXYYo811SQmxtgVjbEl2BUVUEHpAhYEaVL/OcfsSNlld9mZndk597mu3Tlzztue+z3XlmdOIUCg2AISoMUW1j4BAgQIECBAgAABAgQIECBAgAABAiUTkAAtGb2OCRAgQIAAAQIECBAgQIAAAQIECBAotoAEaLGFtU+AAAECBAgQIECAAAECBAgQIECAQMkEJEBLRq9jAgQIECBAgAABAgQIECBAgAABAgSKLSABWmxh7RMgQIAAAQIECBAgQIAAAQIECBAgUDIBCdCS0euYAAECBAgQIECAAAECBAgQIECAAIFiC0iAFltY+wQIECBAgAABAgQIECBAgAABAgQIlExAArRk9DomQIAAAQIECBAgQIAAAQIECBAgQKDYAhKgxRbWPgECBAgQIECAAAECBAgQIECAAAECJROQAC0ZvY4JECBAgAABAgQIECBAgAABAgQIECi2QItid5DF9l+dOD+LYZdtzH22bFO2YzMwAgQIECBAgAABAgQIECBAgACB4go0W7x40fLidpG91rc9dlT2gi7jiF//9Y5lPDpDI0CAAAECBAgQIECAAAECBAgQKKaAS+CLqattAgQIECBAgAABAgQIECBAgAABAgRKKiABWlJ+nRMgQIAAAQIECBAgQIAAAQIECBAgUEwBCdBi6mqbAAECBAgQIECAAAECBAgQIECAAIGSCkiAlpRf5wQIECBAgAABAgQIECBAgAABAgQIFFNAArSYutomQIAAAQIECBAgQIAAAQIECBAgQKCkAhKgJeXXOQECBAgQIECAAAECBAgQIECAAAECxRSQAC2mrrYJECBAgAABAgQIECBAgAABAgQIECipgARoSfl1ToAAAQIECBAgQIAAAQIECBAgQIBAMQUkQIupq20CBAgQIECAAAECBAgQIECAAAECBEoqIAFaUn6dEyBAgAABAgQIECBAgAABAgQIECBQTAEJ0GLqapsAAQIECBAgQIAAAQIECBAgQIAAgZIKSICWlF/nBAgQIECAAAECBAgQIECAAAECBAgUU0ACtJi62iZAgAABAgQIECBAgAABAgQIECBAoKQCEqAl5dc5AQIECBAgQIAAAQIECBAgQIAAAQLFFJAALaautgkQIECAAAECBAgQIECAAAECBAgQKKmABGhJ+XVOgAABAgQIECBAgAABAgQIECBAgEAxBSRAi6mrbQIECBAgQIAAAQIECBAgQIAAAQIESiogAVpSfp0TIECAAAECBAgQIECAAAECBAgQIFBMAQnQYupqmwABAgQIECBAgAABAgQIECBAgACBkgpIgJaUX+cECBAgQIAAAQIECBAgQIAAAQIECBRTQAK0mLraJkCAAAECBAgQIECAAAECBAgQIECgpAISoCXl1zkBAgQIECBAgAABAgQIECBAgAABAsUUkAAtpq62CRAgQIAAAQIECBAgQIAAAQIECBAoqYAEaEn5dU6AAAECBAgQIECAAAECBAgQIECAQDEFJECLqattAgQIECBAgAABAgQIECBAgAABAgRKKiABWlJ+nRMgQIAAAQIECBAgQIAAAQIECBAgUEwBCdBi6mqbAAECBAgQIECAAAECBAgQIECAAIGSCkiAlpRf5wQIECBAgAABAgQIECBAgAABAgQIFFNAArSYutomQIAAAQIECBAgQIAAAQIECBAgQKCkAhKgJeXXOQECBAgQIECAAAECBAgQIECAAAECxRSQAC2mrrYJECBAgAABAgQIECBAgAABAgQIECipgARoSfl1ToAAAQIECBAgQIAAAQIECBAgQIBAMQUkQIupq20CBAgQIECAAAECBAgQIECAAAECBEoqIAFaUn6dEyBAgAABAgQIECBAgAABAgQIECBQTAEJ0GLqapsAAQIECBAgQIAAAQIECBAgQIAAgZIKSICWlF/nBAgQIECAAAECBAgQIECAAAECBAgUU0ACtJi62iZAgAABAgQIECBAgAABAgQIECBAoKQCEqAl5dc5AQIECBAgQIAAAQIECBAgQIAAAQLFFJAALaautgkQIECAAAECBAgQIECAAAECBAgQKKmABGhJ+XVOgAABAgQIECBAgAABAgQIECBAgEAxBSRAi6mrbQIECBAgQIAAAQIECBAgQIAAAQIESiogAVpSfp0TIECAAAECBAgQIECAAAECBAgQIFBMAQnQYupqmwABAgQIECBAgAABAgQIECBAgACBkgpIgJaUX+cECBAgQIAAAQIECBAgQIAAAQIECBRTQAK0mLraJkCAAAECBAgQIECAAAECBAgQIECgpAISoCXl1zkBAgQIECBAgAABAgQIECBAgAABAsUUkAAtpq62CRAgQIAAAQIECBAgQIAAAQIECBAoqYAEaEn5dU6AAAECBAgQIECAAAECBAgQIECAQDEFJECLqattAgQIECBAgAABAgQIECBAgAABAgRKKiABWlJ+nRMgQIAAAQIECBAgQIAAAQIECBAgUEwBCdBi6mqbAAECBAgQIECAAAECBAgQIECAAIGSCkiAlpRf5wQIECBAgAABAgQIECBAgAABAgQIFFNAArSYutomQIAAAQIECBAgQIAAAQIECBAgQKCkAhKgJeXXOQECBAgQIECAAAECBAgQIECAAAECxRSQAC2mrrYJECBAgAABAgQIECBAgAABAgQIECipgARoSfl1ToAAAQIECBAgQIAAAQIECBAgQIBAMQUkQIupq20CBAgQIECAAAECBAgQIECAAAECBEoqIAFaUn6dEyBAgAABAgQIECBAgAABAgQIECBQTAEJ0GLqapsAAQIECBAgQIAAAQIECBAgQIAAgZIKSICWlF/nBAgQIECAAAECBAgQIECAAAECBAgUU6BFMRvXNgECTVNg+fLlceedf4+PP/44DjjgwOjYsWONgSxevDjGvflmjB8/Lt7/4IPYdNNN47Of3Sk23njjGuvYQYAAAQIECBAgQIAAAQIECBBoLAEJ0MaS1g+BJiTw19tvjxtuuD4d8W677VZjAnTcuDfjogsviIkTJ64UXfPmzWO//faPnx53fLRu3Xqlfd4QIECAAAECBAgQIECAAAECBBpTQAK0MbX1RaAJCIwfPz5uueWmWkf6/PPPxZlnDI2lS5fGuuuuG5///BeiR48eMWXKlHjiicfjwQcfiAkTJsSFF10Ubdu2q7U9BQgQIECAAAECBAgQIECAAAECxRCQAC2GqjYJNFGBRYsWxYUXnB9LlixZYwTJpfFXXH55mvzcsFOnGDbs57HNNtvk63z7O9+JoUMGx+uvj41bbr45jj/hxPw+KwQIECBAgAABAgQIECBAgACBxhTwEKTG1NYXgTIXuPHGG9LL2ZP7eK5pue++e2P69HfSIieeeNJKyc9k45Zbdo+f/OS4dP/dd98V77zzSdl0g28ECBAgQIAAAQIECBAgQIAAgUYUkABtRGxdEShngeeeey7u/Psdsf7668dPfvpJ8rKm8Y4fNy7d1a3bZuml79WV++Jee0W7du0ieaDS8889W10R2wgQIECAAAECBAgQIECAAAECRReQAC06sQ4IlL/AnDmz45cXX5QOdMApp9b40KOqSKoeetS9e/eqTdW+JgnSZHnppZeq3W8jAQIECBAgQIAAAQIECBAgQKDYAhKgxRbWPoEmIHDZZZfGBx98EAcccGCNZ3SuGMay5cvSt8nDj9a0LFmyON09892ZaypmHwECBAgQIECAAAECBAgQIECgaAISoEWj1TCBpiHw4AMPxFNPPhldunSp9dL3qoi23GLLdPXtt9+q2rTaa/J0+KlTp6bb53700Wr7bSBAgAABAgQIECBAgAABAgQINIaABGhjKOuDQJkKTJs2La6++spo1qxZnD5wULRp06ZOI916663Tcsml8E899WS1de666x+xcOHCdN/cufOqLWMjAQIECBAgQIAAAQIECBAgQKDYAhKgxRbWPoEyFUjO0LzowgvSJOU3v/Xt6Nt3xzqP9OCv/E96xmhS4dJLfhlPPPH4SnVHjHgobrn5plhnnU9+xDRv3nyl/d4QIECAAAECBAgQIECAAAECBBpLoEVjdaQfAgTKS+C2P/4hxowZHT179ozvf/8H9RrceuutFyedPCB+dtaZ8VHu8vbzhp0bG264YXTt2i2mTJkSH344K3r33j769OkTt9/+l2jbtm292leYAAECBAgQIECAAAECBAgQIFAoAWeAFkpSOwSakMCYMWPi97//XSQPMRo0eGj6Wt/h77zzLnH1NdelCdSkbvIQpVdffSV3RumC2HuffeLCi4bH/AUL0mbbtZMAra+v8gQIECBAgAABAgQIECBAgEBhBJwBWhhHrRBoUgJ33nlHLFu2LFq0aBHnnnv2amNfvGhRfttZubM8k0TpFltsEcOG/Ty/PVnp3r17XHf9DTF9+vQYN+7NWH/99dMzP5N2k2XmjBnpa+fOG6evvhEgQIAAAQIECBAgQIAAAQIEGltAArSxxfVHoAwEli9bno5iUS7ROe2/T2qvaVjvzpyZ7mrdqlVNRdL7gSZPkV9xSe4xOn78uHTTDrlL4S0ECBAgQIAAAQIECBAgQIAAgVIISICWQl2fBEoscMghh8YXvvDFGkcx7Z1p6UOMkgLH/OjY2GTjTaJtu3b58q+++mo88vCISJKcp5x6Wn77iivPPvtMell8sq1Pn74r7rJOgAABAgQIECBAgAABAgQIEGg0AQnQRqPWEYHyEei9/faRfNW0vP762HwCdJdddsnd57PXSkWbNWsW9957T7rtkEO/Hj169Fhpf5IY/dtf/5puS87+3GqrrVba7w0BAgQIECBAgAABAgQIECBAoLEEPASpsaT1Q6CCBLbbbrvovPEn9/W89JJfxqRJk/LRLcg9+OgX5/88Xn75pUgSpUcf/cP8PisECBAgQIAAAQIECBAgQIAAgcYWcAZoY4vrj0AFCDRv3jzOPOOsOOWUkyM5W/SYHx4VvXr1itat28SYMaPTS+OTMAeccmr07btjBUQsBAIECBAgQIAAAQIECBAgQKCpCjgDtKnOnHETKLFAcgn9pZdeHttuu106kvHjx8err76SJj+36907LrxoeBx44EElHqXuCRAgQIAAAQIECBAgQIAAgawLNFu8eNEnj4POukQB49/22FEFbE1TDRV4/dfOQGyoYW3133vv3Zg8eUrukveIbt02i86dO9dWxX4CBAgQIECAAAECBAgQIECAQKMIuAS+UZh1QqCyBTbaqHMkXxYCBAgQIECAAAECBAgQIECAQLkJuAS+3GbEeAgQIECAAAECBAgQIECAAAECBAgQKJiABGjBKDVEgAABAgQIECBAgAABAgQIECBAgEC5CUiAltuMGA8BAgQIECBAgAABAgQIECBAgAABAgUTkAAtGKWGCBAgQIAAAQIECBAgQIAAAQIECBAoNwEJ0HKbEeMhQIAAAQIECBAgQIAAAQIECBAgQKBgAhKgBaPUEAECBAgQIECAAAECBAgQIECAAAEC5SYgAVpuM2I8BAgQIECAAAECBAgQIECAAAECBAgUTEACtGCUGiJAgAABAgQIECBAgAABAgQIECBAoNwEJEDLbUaMhwABAgQIECBAgAABAgQIECBAgACBgglIgBaMUkMECBAgQIAAAQIECBAgQIAAAQIECJSbgARouc2I8RAgQIAAAQIECBAgQIAAAQIECBAgUDABCdCCUWqIAAECBAgQIECAAAECBAgQIECAAIFyE5AALbcZMR4CBAgQIECAAAECBAgQIECAAAECBAomIAFaMEoNESBAgAABAgQIECBAgAABAgQIECBQbgISoOU2I8ZDgAABAgQIECBAgAABAgQIECBAgEDBBCRAC0apIQIECBAgQIAAAQIECBAgQIAAAQIEyk2gRbkNyHgIVLLAqxPnV3J4TSq2Plu2aVLjNVgCBAgQIECAAAECBAgQIEBg7QQkQNfOTS0CayXw9fPHrVU9lQov8Pqvdyx8o1okQIAAAQIECBAgQIAAAQIEyk7AJfBlNyUGRIAAAQIECBAgQIAAAQIECBAgQIBAoQQkQAslqR0CBAgQIECAAAECBAgQIECAAAECBMpOQAK07KbEgAgQIECAAAECBAgQIECAAAECBAgQKJSABGihJLVDgAABAgQIECBAgAABAgQIECBAgEDZCUiAlt2UGBABAgQIECBAgAABAgQIECBAgAABAoUSkAAtlKR2CBAgQIAAAQIECBAgQIAAAQIECBAoOwEJ0LKbEgMiQIAAAQIECBAgQIAAAQIECBAgQKBQAhKghZLUDgECBAgQIECAAAECBAgQIECAAAECZScgAVp2U2JABAgQIECAAAECBAgQIECAAAECBAgUSkACtFCS2iFAgAABAgQIECBAgAABAgQIECBAoOwEJEDLbkoMiAABAgQIECBAgAABAgQIECBAgACBQglIgBZKUjsECBAgQIAAAQIECBAgQIAAAQIECJSdgARo2U2JAREgQIAAAQIECBAgQIAAAQIECBAgUCgBCdBCSWqHAAECBAgQIECAAAECBAgQIECAAIGyE5AALbspMSACBAgQIECAAAECBAgQIECAAAECBAolIAFaKEntECBAgAABAgQIECBAgAABAgQIECBQdgISoGU3JQZEgAABAgQIECBAgAABAgQIECBAgEChBCRACyWpHQIECBAgQIAAAQIECBAgQIAAAQIEyk5AArTspsSACBAgQIAAAQIECBAgQIAAAQIECBAolIAEaKEktUOAAAECBAgQIECAAAECBAgQIECAQNkJSICW3ZQYEAECBAgQIECAAAECBAgQIECAAAEChRKQAC2UpHYIECBAgAABAgQIECBAgAABAgQIECg7AQnQspsSAyJAgAABAgQIECBAgAABAgQIYbHS7AAAQABJREFUECBAoFACEqCFktQOAQIECBAgQIAAAQIECBAgQIAAAQJlJyABWnZTYkAECBAgQIAAAQIECBAgQIAAAQIECBRKQAK0UJLaIUCAAAECBAgQIECAAAECBAgQIECg7AQkQMtuSgyIAAECBAgQIECAAAECBAgQIECAAIFCCUiAFkpSOwQIECBAgAABAgQIECBAgAABAgQIlJ2ABGjZTYkBESBAgAABAgQIECBAgAABAgQIECBQKAEJ0EJJaocAAQIECBAgQIAAAQIECBAgQIAAgbITkAAtuykxIAIECBAgQIAAAQIECBAgQIAAAQIECiUgAVooSe0QIECAAAECBAgQIECAAAECBAgQIFB2AhKgZTclBkSAAAECBAgQIECAAAECBAgQIECAQKEEJEALJakdAgQIECBAgAABAgQIECBAgAABAgTKTkACtOymxIAIECBAgAABAgQIECBAgAABAgQIECiUgARooSS1Q4AAAQIECBAgQIAAAQIECBAgQIBA2QlIgJbdlBgQAQIECBAgQIAAAQIECBAgQIAAAQKFEpAALZSkdggQIECAAAECBAgQIECAAAECBAgQKDsBCdCymxIDIkCAAAECBAgQIECAAAECBAgQIECgUAISoIWS1A4BAgQIECBAgAABAgQIECBAgAABAmUnIAFadlNiQAQIECBAgAABAgQIECBAgAABAgQIFEpAArRQktohQIAAAQIECBAgQIAAAQIECBAgQKDsBCRAy25KDIgAAQIECBAgQIAAAQIECBAgQIAAgUIJSIAWSlI7BAgQIECAAAECBAgQIECAAAECBAiUnUCLshuRAREgQIAAAQJlLTBt2rQYM2Z0TJs6NTbp0iX69OkbXbt2rdOYG1K3Th0oRIAAAQIECBAgQIAAgVUEJEBXAfGWAAECBAgQqF5g/vz5cdONN8S9994Ty5YtW6lQl1wi9Nxh50WPHj1X2l71piF1q9rwSoAAAQIECBAgQIAAgbURcAn82qipQ4AAAQIEMiawfPnyuOAX58fdd9+VJj/32GPPOOroH8a3vv2d6NJl05g+fXqcMuDkeOWVUavJNKTuao3ZQIAAAQIECBAgQIAAgXoKOAO0nmCKEyBAgACBLAokic+nnx6Zhj5w0ODYb7/98wxHHvm9GDpkUC75+UpcPHx4/PZ3v8/vS1YaUnelhrwhQIAAAQIECBAgQIDAWgg4A3Qt0FQhQIAAAQJZE3h4xENpyLvvvsdKyc9k43rrrRc/OvbH6f7p09+JKVMmp+tV3xpSt6oNrwQIECBAgAABAgQIEFhbAWeArq2cegQIECBAICMCS5YsiR49P7m3Z79+e1cbddeu3fLbx44ZG5tttnn6viF18w1aIUCAAAECBAgQIECAQAMEJEAbgKcqAQIECBDIgkCLFi1iwIBT1xjqhAkT8vt7b799fr0hdfONWCFAgAABAgQIECBAgEADBFwC3wA8VQkQIECAAIGIuXPnxrXXXJVSbLHFltGt26dng9bm05C6tbVtPwECBAgQIECAAAECBBIBZ4A6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VwQIECh3gd/cekt+iPfec3ckX2ta9thzzxg27OerFXn33Zn5bd17dM+vWyFAgAABAgQIECBAgAABAo0tsE5jd6g/AgQIEChPgVmzPogPPvigIIObtUI7a3MJfUEGoRECBAgQIECAAAECBAgQIJATcAaow4AAAQIEUoGOucvZHxrxSEE0Dv36NyL5shAgQIAAAQIECBAgQIAAgVILSICWegb0T4AAAQIECBAgQIAAAQIECBAgUK3AzJkz4o033oipU6fGkiVLYvPNNo+evXrGZrnX2pZp06alzziYlqu7SZcu0adP3+jatWtt1eyvQAEJ0AqcVCERIECAAAECBAgQIECAAAECBJqywEcffRS//c2tcU/uuQRLly5dLZT+/Q+IY350bGywwQar7Zs/f37cdOMNce+99+QfzlpVqEsuEXrusPOiR4+eVZu8ZkBAAjQDkyxEAgQIECBAgAABAgQIECBAgEBTEUgSnmf/7Kx49dVX0iF/5jOfjd7bbx/NmzePsWPHxPPPPRcPPfRgenbn1ddcF61atcqHtnz58rjgF+fH00+PTLftsceead158+bF4489FtOnvxOnDDg5hp338+jbd8d8PSuVLSABWtnzKzoCBAgQIECAAAECBAgQIECAQJMS+Muf/5RPfg4cNDj222//lcb/5BNPxHnnnRuTJ0+Om2+6MX563PH5/XfffVc++blq3SOP/F4MHTIoXnnllbh4+PD47e9+n69npbIFPAW+sudXdAQIECBAgAABAgQIECBAgACBJiXwyCOfPJx1n333XS35mQTyxb32igMPOiiN6bHH/pW+Vn17eMRD6eruu++xWt311lsvfnTsj9P9yZmgU6ZMrqrmtcIFJEArfIKFR4AAAQIECBAgQIAAAQIECBBoKgIffvhhTJo0MR3uLrvsWuOwd9zxM+m+WbNmxaxZH6TryUOSevTsGdttt13067d3tXW7du2W3z52zNj8upXKFnAJfGXPr+gIECBAgAABAgQIECBAgAABAk1GoF27dnHTzbfGe++9l3tQUY8axz1nzpx03zrrrJO7B2jrdL1FixYxYMCpNdZJdkyYMCG/P7mvqCUbAhKg2ZhnURIgQIAAAQIECBAgQIAAAQIEyl4gSWJuvvnm6deaBvvUk0+mu7fYcsto3fqTBOiayif75s6dG9dec9Un9bbYMrp1+/Rs0Nrq2t+0BSRAm/b8GT0BAgQIECBAgAABAgQIECBAIFMCyUOQRo16OY25//791xj7zJkz4qmnnopnnnk6Rr38cixevDi22mrrOHfYeWusZ2dlCUiAVtZ8ioYAAQIECBAgQIAAAQIECBAgULECb7z+egwffmEa33a9e8ehX//GGmN9eMSIuPXWW/JlWrZsGT846qjo3LlzfpuVyhfwEKTKn2MREiBAgAABAgQIECBAgAABAgSavMBbb42PM84YEgsXLozkXqGnnz4oknuArmlp3aZNHHTwwXHwwV/J3VO0ZyxatCjOPGNoDB0yOBYsWLCmqvZVkIAzQCtoMoVCgAABAgQIECBAgAABAgQIEKhEgRdeeD6GnXtOzJ8/P9q2bRsXXnRxrfcJTRwOOeTQPMfy5cvjrn/cGVdffVU899yzceWvroiBgwbn91upXIE1p8krN26RESBAgAABAgQIECBAgAABAgQINAGBhx56MM4YOiRNfnbqtFFcetnlsc0229R75M2aNYv//b9Don//A9K6//znI/Huu+/Wux0Vmp6ABGjTmzMjJkCAAAECBAgQIECAAAECBAhkQuB3v/1N/PLi4bF06dLo3qNH/OrKq9JL2RsS/Jf69UurL1u2LN5++62GNKVuExFwCXwTmSjDJECAAAECBAgQIECAAAECBAhkRSC5XP3yyy+N+++7Lw155513jjPPOju9/L0mg3nz5sWbb74R77zzTuy99z7RunXraot27Ngxvz25n6il8gUkQCt/jkVIgAABAgQIECBAgAABAgQIEGhSAtfk7tNZlfw84IAD4+QBp0Tz5s3XGMOMGdNj4OmnpWXatG4T/fbeu9ryEydMzG/v1bNXft1K5Qq4BL5y51ZkBAgQIECAAAECBAgQIECAAIEmJ/Dcs8/GP3IPK0qW5Ontp552eq3Jz6Rs8pT3qrM77777rkjOIl11WbJkSdx++1/SzUnZrt26rVrE+woUcAZoBU6qkAgQaFoCc+bMaloDruDRdujw6aUwFRym0AgQIECAAAECBAiUrcCiRYviqqt+lY6vQ4cOscsuu8bIkf9Z43j79t0xvTQ+ecjRYYcdnj7lfdSol+P6666No394TLRs2TKtP3v27Ljs0kvy9/085dTTIqljqXwBCdDKn2MREiBQ5gJPj3y0zEeYneHt3//Q7AQrUgIECBAgQIAAAQJlKDBixEMxbdq0dGRz5syJYcPOqXWU11x7XWy11dZpueQp76+Nfi3+9eijcccdf4t/Pfav2GbrbWLevLm5+4O+GVX3/Dz88CNi9933qLVtBSpDQAK0MuZRFAQIECBAgAABAgQIECBAgACBJi8wbty4BscwZMgZ6ZmjN95wQ3zw/vsx8v1PzyDt2bNnHH/CSdGnT58G96OBpiMgAdp05spICRAgQIAAAQIECBAgQIAAAQIVLXDSSSdH8tWQJbmsvX//A2L//fvHjBkzYtKkidGmTdvo3r17tGvXriFNq9tEBSRAm+jEGTYBAgQIECBAgAABAgQIECBAgEDNAkkitEuXLulXzaXsyYKAp8BnYZbFSIAAAQIECBAgQIAAAQIECBAgQCCjAhKgGZ14YRMgQIAAAQIECBAgQIAAAQIECBDIgoAEaBZmWYwECBAgQIAAAQIECBAgQIAAAQIEMiogAZrRiRc2AQIECBAgQIAAAQIECBAgQIAAgSwISIBmYZbFSIAAAQIECBAgQIAAAQIECBAgQCCjAhKgGZ14YRMgQIAAAQIECBAgQIAAAQIECBDIgoAEaBZmWYwECBAgQIAAAQIECBAgQIAAAQIEMiogAZrRiRc2AQIECBAgQIAAAQIECBAgQIAAgSwISIBmYZbFSIAAAQIECBAgQIAAAQIECBAgQCCjAhKgGZ14YRMgQIAAAQIECBAgQIAAAQIECBDIgoAEaBZmWYwECBAgQIAAAQIECBAgQIAAAQIEMiogAZrRiRc2AQIECBAgQIAAAQIECBAgQIAAgSwISIBmYZbFSIAAAQIECBAgQIAAAQIECBAgQCCjAhKgGZ14YRMgQIAAAQIECBAgQIAAAQIECBDIgoAEaBZmWYwECBAgQIAAAQIECBAgQIAAAQIEMiogAZrRiRc2AQIECBAgQIAAAQIECBAgQIAAgSwItMhCkGIkQIAAAQIECBAgQIAAAQIECBCoXmDOnFnV77C1JAIdOnQsSb+V3KkEaCXPrtgIECBAgAABAgQIECBAgAABArUIPD3y0VpK2N2YAvv3P7Qxu8tEXy6Bz8Q0C5IAAQIECBAgQIAAAQIECBAgQIBANgUkQLM576ImQIAAAQIECBAgQIAAAQIECBAgkAkBCdBMTLMgCRAgQIAAAQIECBAgQIAAAQIECGRTQAI0m/MuagIECBAgQIAAAQIECBAgQIAAAQKZEJAAzcQ0C5IAAQIECBAgQIAAAQIECBAgQIBANgUkQLM576ImQIAAAQIECBAgQIAAAQIECBAgkAkBCdBMTLMgCRAgQIAAAQIECBAgQIAAAQIECGRTQAI0m/MuagIECBAgQIAAAQIECBAgQIAAAQKZEJAAzcQ0C5IAAQIECBAgQIAAAQIECBAgQIBANgUkQLM576ImQIAAAQIECBAgQIAAAQIECBAgkAkBCdBMTLMgCRAgQIAAAQIECBAgQIAAAQIECGRTQAI0m/MuagIECBAgQIAAAQIECBAgQIAAAQKZEJAAzcQ0C5IAAQIECBAgQIAAAQIECBAgQIBANgUkQLM576ImQIAAAQIECBAgQIAAAQIECBAgkAkBCdBMTLMgCRAgQIAAAQIECBAgQIAAAQIECGRTQAI0m/MuagIECBAgQIAAAQIECBAgQIAAAQKZEJAAzcQ0C5IAAQIECBAgQIAAAQIECBAgQIBANgUkQLM576ImQIAAAQIECBAgQIAAAQIECBAgkAkBCdBMTLMgCRAgQIAAAQIECBAgQIAAAQIECGRTQAI0m/MuagIECBAgQIAAAQIECBAgQIAAAQKZEJAAzcQ0C5IAAQIECBAgQIAAAQIECBAgQIBANgUkQLM576ImQIAAAQIECBAgQIAAAQIECBAgkAkBCdBMTLMgCRAgQIAAAQIECBAgQIAAAQIECGRTQAI0m/MuagIECBAgQIAAAQIECBAgQIAAAQKZEJAAzcQ0C5IAAQIECBAgQIAAAQIECBAgQIBANgUkQLM576ImQIAAAQIECBAgQIAAAQIECBAgkAkBCdBMTLMgCRAgQIAAAQIECBAgQIAAAQIECGRTQAI0m/MuagIECBAgQIAAAQIECBAgQIAAAQKZEJAAzcQ0C5IAAQIECBAgQIAAAQIECBAgQIBANgUkQLM576ImQIAAAQIECBAgQIAAAQIECBAgkAkBCdBMTLMgCRAgQIAAAQIECBAgQIAAAQIECGRTQAI0m/MuagIECBAgQIAAAQIECBAgQIAAAQKZEJAAzcQ0C5IAAQIECBAgQIAAAQIECBAgQIBANgUkQLM576ImQIAAAQIECBAgQIAAAQIECBAgkAkBCdBMTLMgCRAgQIAAAQIECBAgQIAAAQIECGRTQAI0m/MuagIECBAgQIAAAQIECBAgQIAAAQKZEJAAzcQ0C5IAAQIECBAgQIAAAQIECBAgQIBANgUkQLM576ImQIAAAQIECBAgQIAAAQIECBAgkAkBCdBMTLMgCRAgQIAAAQIECBAgQIAAAQIECGRTQAI0m/MuagIECBAgQIAAAQIECBAgQIAAAQKZEJAAzcQ0C5IAAQIECBAgQIAAAQIECBAgQIBANgUkQLM576ImQIAAAQIECBAgQIAAAQIECBAgkAkBCdBMTLMgCRAgQIAAAQIECBAgQIAAAQIECGRTQAI0m/MuagIECBAgQIAAAQIECBAgQIAAAQKZEGiRiSgFSYAAAQIECBAg0KgCkydPjrlz59a5z3XXbRFbbbV1ncsrSIAAAQIECBAgQKCuAhKgdZVSjgABAgQIECBAoM4C1117TTz77DN1Lt+p00Zx25/+XOfyChIgQIAAAQIECBCoq4BL4OsqpRwBAgQIECBAgEDRBNq0aV20tjVMgAABAgQIECCQbQFngGZ7/kVPgAABAgQIECiKwNAzzowlS5asse0//OH3ceff74gWLVrEKaeevsaydhIgQIAAAQIECBBYWwEJ0LWVU48AAQIECBAgQKBGgbZt29a4L9nx/PPPxT/u/Hta5rjjT4gddthhjeXtJECAAAECBAgQILC2Ai6BX1s59QgQIECAAAECBNZKYPbs2XHhBb+I5cuXxx577Blf+cr/rFU7KhEgQIAAAQIECBCoi4AEaF2UlCFAgAABAgQIECiYwE033RhJErRVq1Zx/AknFKxdDREgQIAAAQIECBCoTkACtDoV2wgQIECAAAECBIoiMHbsmHjg/vvSto888vux8cabFKUfjRIgQIAAAQIECBCoEpAArZLwSoAAAQIECBAgUHSBm2++Ke1jo402iv875JCi96cDAgQIECBAgAABAhKgjgECBAgQIECAAIFGEZg2bVq89OKLaV/f+vZ3Yt11122UfnVCgAABAgQIECCQbQEJ0GzPv+gJECBAgAABAo0mcP/996Z9bbBBxzjooIMbrV8dESBAgAABAgQIZFtAAjTb8y96AgQIECBAgECjCCxdujQeevDBtK+vfe1rsd566zVKvzohQIAAAQIECBAgIAHqGCBAgAABAgQIECi6wH/+8++YNWtW2s8++3656P3pgAABAgQIECBAgECVgARolYRXAgQIECBAgACBogncf98nT37fdtvtolu3bkXrR8MECBAgQIAAAQIEVhWQAF1VxHsCBAgQIECAAIGCCsya9UE899yzaZv99t67oG1rjAABAgQIECBAgEBtAhKgtQnZT4AAAQIECBAg0CCB0aNHx/Lly9M2tt122wa1pTIBAgQIECBAgACB+gpIgNZXTHkCBAgQIECAAIF6CYwZMyZfvnv3Hvl1KwQIECBAgAABAgQaQ0ACtDGU9UGAAAECBAgQyLDAm2+8kUa/YadO0b59+wxLCJ0AAQIECBAgQKAUAhKgpVDXJwECBAgQIEAgQwLvvjszjbZH9+4ZilqoBAgQIECAAAEC5SIgAVouM2EcBAgQIECAAIEKFfhg1qw0Mpe/V+gEC4sAAQIECBAgUOYCLcp8fIZHgAABAgQIECDQxAXuvPOuJh6B4RMgQIAAAQIECDRlAQnQpjx7xk6AAAECBAgQIECAAIEKE5g2bVqMGTM6pk2dGpt06RJ9+vSNrl27VliUwiFAgACBxhSQAG1MbX0RIECAAAECBAgQIECAQLUC8+fPj5tuvCHuvfeeWLZs2UpluuQSoecOOy969Oi50nZvCBAgQIBAXQTcA7QuSsoQIECAAAECBAgQIECAQNEEli9fHhf84vy4++670uTnHnvsGUcd/cP41re/E126bBrTp0+PUwacHK+8MqpoY9AwAQIECFSugDNAK3duRUaAAAECBAgQIECAAIEmIZAkPp9+emQ61oGDBsd+++2fH/eRR34vhg4ZlEt+vhIXDx8ev/3d7/P7rBAgQIAAgboIOAO0LkrKECBAgAABAgQIECBAgEDRBB4e8VDa9u6777FS8jPZuN5668WPjv1xun/69HdiypTJ6bpvBAgQIECgrgLOAK2rlHIECBAgQIAAAQIECBAgUHCBJUuWRI+en9zbs1+/vattv2vXbvntY8eMjc022zz/3goBAgQIEKhNQAK0NiH7CRAgQIAAAQIECBAgQKBoAi1atIgBA05dY/sTJkzI7++9/fb5dSsECBAgQKAuAi6Br4uSMgQIECBAgAABAgQIECBQEoG5c+fGtddclfa9xRZbRrdun54NWpIB6ZQAAQIEmpyAM0Cb3JQZMAECBAgQIECAAAECBCpbYObMGfHUU0/FM888HaNefjkWL14cW221dZw77LzKDlx0BAgQIFAUAQnQorBqlAABAgQIECBAgAABAgTWVuDhESPi1ltvyVdv2bJl/OCoo6Jz5875bVYIECBAgEBdBVwCX1cp5QgQIECAAAECBAgQIECgUQRat2kTBx18cBx88FeiR4+esWjRojjzjKExdMjgWLBgQaOMQScECBAgUDkCzgCtnLkUCQECBAgQIECAAAECBCpC4JBDDs3HsXz58rjrH3fG1VdfFc8992xc+asrYuCgwfn9VrIp8OQTT8Rro1+L7373sOjQoUM2EURNgECdBZwBWmcqBQkQIECAAAECBAgQIECgsQWaNWsW//t/h0T//gekXf/zn4/Eu+++29jD0F8ZCUyZMjkuuuiC+Ntfb4958+aW0cgMhQCBchWQAC3XmTEuAgQIECBAgAABAgQIEMgLfKlfv3R92bJl8fbbb+W3W8mWQPKArMGDBsbHH3+crcBFS4BAgwQkQBvEpzIBAgQIECBAgAABAgQINERg3rx58dJLL8b999+3xvt7duzYMd/NwoUL8+tWsiPw1FNPxgnHHxczZ87MTtAiJUCgIALuAVoQRo0QIECAAAECBAgQIECAwNoIzJgxPQaeflpatU3rNtFv772rbWbihIn57b169sqvW6l8gVmzZsXVV10Zjz/+WBpsy5Yt0wdjVX7kIiRAoFACEqCFktQOAQIECBAgQIAAAQL1EkjO/Hv+uedi6tQp0ap169hhhz7Rq1evaN68eb3aUbhpCyRPeU/O7kySXHfffVckl7on9/1ccVmyZEncfvtf0k1J2a7duq2423oFCyxevDiO+eHR8dFHc9Io99rrS7HPPvvGsGHnVHDUQiNAoNACEqCFFtUeAQIECBAgQKBIAnPmzCpSy5pdG4EOHT69HHdt6me9zoMPPBA33HB9zJnzSVKjyqN9+/Zx7rDzok+fvlWbvFa4QJLsPOyww9OnvI8a9XJcf921cfQPj4nkLL9kmT17dlx26SX5+36ecuppqyVIK5wo0+El93xNkp+bbLJJfO/7P4j99++f3jIh0yiCJ0Cg3gISoPUmU4EAAQIECBAgUBqBp0c+WpqO9VqtwP79D612u421CzzyyMNxySUXpwW79+gRu+26W3o568iRI2P69HfSB5ycfc65sWtuuyUbAslT3l8b/Vr869FH4447/hb/euxfsc3W26RP+H7zzTej6p6fhx9+ROy++x7ZQBFlKrDOOutEkvROEp/ODndQECCwtgISoGsrpx4BAgQIECBAgAABAvUWSM74vOLyy9J6X/pSvxg8ZGi0aPHJvyVHHf3D+NlZZ8bLL78UFw8fHn+87U/5ffXuSIUmJzBkyBmxyy67xo033BAfvP9+jHz/P/kYevbsGcefcFLuzOA++W1WsiGw7rrrxoEHHpSNYEVJgEDRBCRAi0arYQIECBAgQIAAAQIEVhX4x51/T8/mS87qOu7441dKcLbO3Qf0Z2efE0cecVh8+OGseOKJx9N7/a3ahveVKZBcCt+//wHpmX4zZsyISZMmRps2baN79+7Rrl27ygxaVAQIECDQKALrNEovOiFAgAABAgQIECBAgEBO4N///nfqsPMuu+QefLPhaibJPUD33PPz6fa777prtf02VL5Akgjt0qVL7Lbb7ukZn5KflT/nIiRAgECxBSRAiy2sfQIECBAgQIAAAQIEUoHkPo5vv/1Wuv75z3+hRpXtd9gh3Tc6d0/I5OnfFgIECBAgQIBAQwQkQBuipy4BAgQIECBAgAABAnUWmDRpUiRPdE6WDas5+7OqoeTsv2RJyk6dOqVqs1cCBAgQIECAwFoJSICuFZtKBAgQIECAAAECBAjUV2De3Ln5Ku07dMivr7rSsWPH/KbZs+fk160QIECAAAECBNZGQAJ0bdTUIUCAAAECBAgQIECg3gLz5s/L11l//fXz66uutGy5Xn7TwoUL8utWCBAgQIAAAQJrIyABujZq6hAgQIAAAQIECBAgUG+BxYsX5+u0bds2v77qSvPcE+KrFvcArZLwSoAAAQIECKytwKd/WaxtC+oRIECAAAECBAgQIECgDgIbbPDppe1LlnyaDF216tx5n14q37pV61V3e0+AAAECBAgQqJeABGi9uBQmQIAAAQIECBAgQGBtBTp16pSvunDhx/n1VVc+mvNRftOazhTNF7JCgAABAgQIEFiDgAToGnDsIkCAAAECBAgQIECgcAIrJkDff++9Ghv+6KNPE6Ad1nCv0BobsIMAAQIECBAgsIKABOgKGFYJECBAgAABAgQIECieQHI2Z6tWrdIOpk6bWmNH02dMT/e1b98+NtlkkxrL2UGAAAECBAgQqIuABGhdlJQhQIAAAQIECBAgQKAgAn369E3bGTXq5Rrbe/yxx9J9223XO5o1a1ZjOTsIEMimwGc/u1M8NOKR9GvTTbtmE0HUBAjUS0ACtF5cChMgQIAAAQIECBAg0BCBb37zW2n1p558MmbOnLlaU2+//XaMHz8u3f7l/fZbbb8NBAgQIECAAIH6CkiA1ldMeQIECBAgQIAAAQIE1lpgp899Lnr16hWLFy+OQQNPXykJOm3atDjrzKFp2127do1+/fZe635UJECAAAECBAhUCbSoWvFKgAABAgQIECBAgACBxhD46XHHx9k/OyumTp0S3//eEdG79/axbNnSGDt2bO51WbRp0ybOPufcaN68eWMMRx8ECBAgQIBAhQs4A7TCJ1h4BAgQIECAAAECBMpNoG/fHePqa66N7bdPEp/L4tVXX4nRo0en65/daae49LLLo0ePnuU2bOMhQIAAAQIEmqiAM0Cb6MQZNgECBAgQIECAAIGmLJA8uOTyK66MBQsWpPf8XLJkSWy22Wax0Uadm3JYxk6AAAECBAiUoYAEaBlOiiERIECAAAECBAgQyIpA69ato+rJ8FmJWZwECBAgQIBA4wpIgDaut94IECBAgAABAgQIECDQKAJz5sxqlH50UrtAhw4day+kBAECBAgUTUACtGi0GiZAgAABAgQIECBAgEDpBJ4e+WjpOtfzSgL79z90pffeECBAgEDjCngIUuN6640AAQIECBAgQIAAAQIECBAgQIAAgUYUkABtRGxdESBAgAABAgQIECBAgAABAgQIECDQuAISoI3rrTcCBAgQIECAAAECBAgQIECAAAECBBpRQAK0EbF1RYAAAQIECBAgQIAAAQIECBAgQIBA4wpIgDaut94IECBAgAABAgQIECBAgAABAgQIEGhEAQnQRsTWFQECBAgQIECAAAECBAgQIECAAAECjSsgAdq43nojQIAAAQIECBAgQIAAAQIECBAgQKARBSRAGxFbVwQIECBAgAABAgQIECBAgAABAgQINK6ABGjjeuuNAAECBAgQIECAAAECBAgQIECAAIFGFGjRiH3pigABAgQIECBAgAABAgQIECihwJw5s0rYu65XFOjQoeOKb60TIFBEAQnQIuJqmgABAgQIECBAgAABAgQIlJPA0yMfLafhZHos+/c/NNPxC55AYwq4BL4xtfVFgAABAgQIECBAgAABAgQIECBAgECjCkiANiq3zggQIECAAAECBAgQIECAAAECBAgQaEyBsr0Efv78efHxxwsa06JgffXaqGmOu2AAZdbQrFnvlc2IHBtlMxVRTsdF+agYiePCMVCdgOOiOhXbEgHHhuOAAIG6Cvh5UVepbJVzXGRrvusTbVM9NtZbr3W0adO2PqE2WtlmixcvWt5ovdWjowkT3oh3Z75TjxrlU3T0ZAnQ8pmNiO03b102w3FslM1UlNVx8dFHH5YPTMZH0r79BmUj4Lgom6kIx0X5zEW5jaScjo1yszGe8hDwu6Q85iEZRTn9vHBcOC6qE3BcVKdSum3l9DOjPgqdN940unffpj5VGq1s2SZAG01ARwQIECBAgAABAgQIECBAgAABAgQIVKyAe4BW7NQKjAABAgQIECBAgAABAgQIECBAgAABCVDHAAECBAgQIECAAAECBAgQIECAAAECFSsgAVqxUyswAgQIECBAgAABAgQIECBAgAABAgQkQB0DBAgQIECAAAECBAgQIECAAAECBAhUrIAEaMVOrcAIECBAgAABAgQIECBAgAABAgQIEJAAdQwQIECAAAECBAgQIECAAAECBAgQIFCxAhKgFTu1AiNAgAABAgQIECBAgAABAgQIECBAQALUMUCAAAECBAgQIECAAAECBAgQIECAQMUKSIBW7NQKjAABAgQIECBAgAABAgQIECBAgAABCVDHAAECBAgQIECAAAECBAgQIECAAAECFSsgAVqxUyswAgQIECBAgAABAgQIECBAgAABAgQkQB0DBAgQIECAAAECBAgQIECAAAECBAhUrIAEaMVOrcAIECBAgAABAgQIECBAgAABAgQIEJAAdQwQIECAAAECBAgQIECAAAECBAgQIFCxAhKgFTu1AiNAgAABAgQIECBAgAABAgQIECBAQALUMUCAAAECBAgQIECAAAECBAgQIECAQMUKSIBW7NQKjAABAgQIECBAgAABAgQIECBAgAABCVDHAAECBAgQIECAAAECBAgQIECAAAECFSsgAVqxUyswAgQIECBAgAABAgQIECBAgAABAgQkQB0DBAgQIECAAAECBAgQIECAAAECBAhUrIAEaMVOrcAIECBAgAABAgQIECBAgAABAgQIEJAAdQwQIECAAAECBAgQIECAAAECBAgQIFCxAhKgFTu1AiNAgAABAgQIECBAgAABAgQIECBAQALUMUCAAAECBAgQIECAAAECBAgQIECAQMUKSIBW7NQKjAABAgQIECBAgAABAgQIECBAgAABCVDHAAECBAgQIECAAAECBAgQIECAAAECFSsgAVqxUyswAgQIECBAgAABAgQIECBAgAABAgQkQB0DBAgQIECAAAECBAgQIECAAAECBAhUrIAEaMVOrcAIECBAgAABAgQIECBAgAABAgQIEJAAdQwQIECAAAECBAgQIECAAAECBAgQIFCxAhKgFTu1AiNAgAABAgQIECBAgAABAgQIECBAQALUMUCAAAECBAgQIECAAAECBAgQIECAQMUKSIBW7NQKjAABAgQIECBAgAABAgQIECBAgAABCVDHAAECBAgQIECAAAECBAgQIECAAAECFSsgAVqxUyswAgQIECBAgAABAgQIECBAgAABAgQkQB0DBAgQIECAAAECBAgQIECAAAECBAhUrIAEaMVOrcAIECBAgAABAgQIECBAgAABAgQIEJAAdQwQIECAAAECBAgQIECAAAECBAgQIFCxAhKgFTu1AiNAgAABAgQIECBAgAABAgQIECBAQALUMUCAAAECBAgQIECAAAECBAgQIECAQMUKSIBW7NQKjAABAgQIECBAgAABAgQIECBAgAABCVDHAAECBAgQIECAAAECBAgQIECAAAECFSsgAVqxUyswAgQIECBAgAABAgQIECBAgAABAgQkQB0DBAgQIECAAAECBAgQIECAAAECBAhUrIAEaMVOrcAIECBAgAABAgQIECBAgAABAgQIEJAAdQwQIECAAAECBAgQIECAAAECBAgQIFCxAhKgFTu1AiNAgAABAgQIECBAgAABAgQIECBAoAUCAjUJvP/++3HFFZdFr5694vs/OKqmYrZXuMDy5cvj6adHxttvvRVTp02N5cuWx2abbx49evSI3XbbPdZZx+coFX4I1BjetGnTYuR//h2TJ0+OJUuWxPY77BB9+vSNzXPHh4VAlcDSpUvj+uuviwXz58f/fPWrse2221Xt8poRgZEj/xOLPl5Ua7Rbb7NNbLrpprWWU6CyBObMmR2jR4+ON954I6bkfp907tw5uuf+xujXb+9o2bJlZQUrmhoFxuSOgenTp9e4v7odnTp1ih0/85nqdtlWoQIffvhh/Pupp3J/e06K9957L/2dscWWW8Zee30p1ltvvQqNWli1Cbzzzjvx8ssvxfhx42J27ndK1027xud23iV23HHH2qranzEBCdCMTXhdw122bFlcftmlaeKrLv+01LVd5ZqWwKuvvhJXX3VVjB8/rtqBJ/+snnjiSRIa1epU7sYkoXXzTTfG3/9+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xCxAADRmOnZEAAEEEEAAAQQQQAABBBBAAAEEEEAAgXgXIAAa73eI/iGAAAIIIIAAAggggAACCCCAAAIIIIBAzAIEQGOmY0cEEEAAAQQQQAABBBBAAAEEEEAAAQQQiHeB4+K9g/QPAQQQQAABBBJDYN++fbZw4QJbvmyZLVu+3FavWml58ua1oqcWtarVqlnjxudazpw508T4ZvJkW79hvZUqVcrOOadhmtuyMnaBzZs327hxY/0BmjZtavnzn5Shgx2N92fLlt9szJgx/vouueQSK1iwUIau9WjbaMKE8bZx40YrV66cNWjwf0db9+kvAggggAACCCCQpgAB0DR5WIkAAggggAACf4fA0qVL7emn+tnKlSsjnm7UqM/tpReHWYsWV1vLVq3tmGMiT2L5esxXNn3aNGvUqDEB0IiSWbPw119/tZEjhvuDnX3W2RkOgB7p+zN+/Dhbu2aN3XLrbakgNm3aaC8OG2Zt27WzU04pHFqvYG9wrfXq1cu2AdAvv/jC5s6dYxdddHGWBkCjuYaAeYMAAggggAACCPwNAgRA/wZkToEAAggggAACkQX+/PNPe//99+zNN163//3vf36jihUrWYUKFaxMmTK2c+dOW7Fihf344xTbtm2bvfrqSJs7b6716NHT8uTJG/mgLEUggsBTLsA+Yfx4u/SypqnWLl++zO7tdI/t2bPHB0BTbcCCmARwjYmNnRBAAAEEEEDgMAgQAD0MqBwSAQQQQAABBDImMOrzz+zVkSP8xqeeeqrd27mL1at3RqqdNeLwqSefsDlz5thPU6faI3372pNPPW05cuRItS0LEIgksGH9+kiL/bKtW7f64GekDYoXL2FPPPGkX6X3tIwLpOWa8aOwJQIIIIAAAgggcOgCkeePHfpxOQICCCCAAAIIIJCmwJYtW+y1117121SoUNFefmVExOCnNihSpIj16fuolSxZ0m8/c+YM07R4GgKHWyB37tx2xpln+p88efIc7tNxfAQQQAABBBBAAIHDIMAI0MOAyiERQAABBBBAIH2BESNesV27dvkNO959j5144olp7pQvXz577PF+dnfHDrZjx3Z73QVPmza93I47LvpfZ/bv3++m0C/30+hLlizlp9anV0hJ06A1dfeXX37xRZc0Fb9EiZJpnifo+O+//24r3ZT91WtWW9GiRa18+QqmfkdqKvq03U3r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" alt="Batting slot of each lineup&#39;s best hitter by 2024 OPS. Blue marks slots 1-2; traditional practice places this hitter third." width="672" />
+<p class="caption">
+Batting slot of each lineup’s best hitter by 2024 OPS. Blue marks slots 1-2; traditional practice places this hitter third.
+</p>
+</div>
+<pre class="r"><code>par(old_par)</code></pre>
+<p>The best hitter by 2024 OPS bats first or second in <strong>117 of 211 lineups</strong> and third in only 27. The hitter whom the Traditional template places third bats first or second in 136 lineups. In this five-team sample, most of the 117 lineups with the best hitter in slot 1 or 2 come from four players: Shohei Ohtani leading off for the Dodgers, and Rafael Devers (Giants), Kyle Tucker (Cubs), and Willson Contreras (Cardinals) batting second. Contreras also bats fourth, the traditional cleanup slot, in many other Cardinals lineups, so the pattern is not uniform across teams. This placement is consistent with modern lineup practice, which moves the strongest hitters to the top of the order to give them more plate appearances. The scope’s Traditional rule instead fills slots 1-2 by OBP and reserves slot 3 for the best remaining OPS, so it conflicts with how these teams use their best hitters.</p>
+<p>The 23 lineups whose best 2024 OPS bats ninth all involve Tyler Fitzgerald (Giants), whose .831 OPS came from 341 PA in 2024. Prior-season rates for partial-season players can differ from how managers judge them a year later.</p>
+</div>
+<div id="size-of-the-misses" class="section level3" number="14.4.3">
+<h3 number="14.4.3"><span class="header-section-number">14.4.3</span> Size of the Misses</h3>
+<p>For each lineup, the table measures how far the first broken rule was missed: the gap between the highest available value of the rule’s metric and the value of the batter actually placed in that slot.</p>
+<pre class="r"><code>miss_size &lt;- bind_rows(lapply(confirmed_lineups, function(d) {
+  ok &lt;- slot_follows_traditional(d)
+  j &lt;- which(!ok)[1]; v &lt;- d[[rule_metric[j]]]
+  tibble(first_broken_slot = j, metric = toupper(rule_metric[j]), gap = max(v[j:9]) - v[j])
+}))
+knitr::kable(miss_size %&gt;% group_by(first_broken_slot, metric) %&gt;% summarise(
+  lineups = n(), median_gap = sprintf(&quot;%.3f&quot;, median(gap)), gap_at_most_010 = sum(gap &lt;= 0.010),
+  .groups = &quot;drop&quot;), col.names = c(&quot;First broken slot&quot;, &quot;Metric&quot;, &quot;Lineups&quot;, &quot;Median gap&quot;, &quot;Gap of .010 or less&quot;))</code></pre>
+<table>
+<thead>
+<tr class="header">
+<th align="right">First broken slot</th>
+<th align="left">Metric</th>
+<th align="right">Lineups</th>
+<th align="left">Median gap</th>
+<th align="right">Gap of .010 or less</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="right">1</td>
+<td align="left">OBP</td>
+<td align="right">143</td>
+<td align="left">0.038</td>
+<td align="right">2</td>
+</tr>
+<tr class="even">
+<td align="right">2</td>
+<td align="left">OBP</td>
+<td align="right">55</td>
+<td align="left">0.006</td>
+<td align="right">49</td>
+</tr>
+<tr class="odd">
+<td align="right">3</td>
+<td align="left">OPS</td>
+<td align="right">13</td>
+<td align="left">0.129</td>
+<td align="right">0</td>
+</tr>
+</tbody>
+</table>
+<pre class="r"><code>slot2_misses &lt;- miss_size %&gt;% filter(first_broken_slot == 2L)</code></pre>
+<p>Two kinds of failure dominate. Most lineups break the rule at slot 1, by a wide OBP margin: the leadoff hitter is usually not the highest-OBP starter. Among the 55 lineups that first break the rule at slot 2, 49 miss by .010 OBP or less (median 0.006). An exact rule treats a .006 OBP difference, such as Freeman versus Betts, as decisive, although such differences are well within the noise of a season’s statistics.</p>
+</div>
+<div id="lineups-change-from-game-to-game" class="section level3" number="14.4.4">
+<h3 number="14.4.4"><span class="header-section-number">14.4.4</span> Lineups Change From Game to Game</h3>
+<pre class="r"><code>order_keys &lt;- vapply(confirmed_lineups, function(d) paste(d$batter_id, collapse = &quot;,&quot;), character(1))
+lineup_teams &lt;- vapply(confirmed_lineups, function(d) d$team[1], character(1))
+lineup_variation &lt;- tibble(team = lineup_teams, order_key = order_keys) %&gt;% group_by(team) %&gt;%
+  summarise(team_games = n(), distinct_orders = n_distinct(order_key),
+            most_used_order_games = max(table(order_key)), .groups = &quot;drop&quot;)
+knitr::kable(lineup_variation, col.names = c(&quot;Team&quot;, &quot;Team-games&quot;, &quot;Distinct nine-player orders&quot;,
+                                             &quot;Games with the most-used order&quot;))</code></pre>
+<table>
+<thead>
+<tr class="header">
+<th align="left">Team</th>
+<th align="right">Team-games</th>
+<th align="right">Distinct nine-player orders</th>
+<th align="right">Games with the most-used order</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Angels</td>
+<td align="right">13</td>
+<td align="right">10</td>
+<td align="right">2</td>
+</tr>
+<tr class="even">
+<td align="left">Cardinals</td>
+<td align="right">56</td>
+<td align="right">35</td>
+<td align="right">6</td>
+</tr>
+<tr class="odd">
+<td align="left">Cubs</td>
+<td align="right">17</td>
+<td align="right">14</td>
+<td align="right">2</td>
+</tr>
+<tr class="even">
+<td align="left">Dodgers</td>
+<td align="right">69</td>
+<td align="right">56</td>
+<td align="right">5</td>
+</tr>
+<tr class="odd">
+<td align="left">Giants</td>
+<td align="right">56</td>
+<td align="right">41</td>
+<td align="right">5</td>
+</tr>
+</tbody>
+</table>
+<p>Each team uses many different orders, and no order is used in more than 6 of the sampled games. Managers adjust lineups for rest days, opposing pitchers, platoon matchups, and current form, none of which enter a rule based on prior-season OBP, OPS, and SLG.</p>
+</div>
+<div id="most-used-lineup-of-each-team-against-the-template" class="section level3" number="14.4.5">
+<h3 number="14.4.5"><span class="header-section-number">14.4.5</span> Most-Used Lineup of Each Team Against the Template</h3>
+<pre class="r"><code>team_examples &lt;- bind_rows(lapply(sort(unique(lineup_teams)), function(tm) {
+  keys &lt;- order_keys[lineup_teams == tm]
+  top_key &lt;- names(sort(table(keys), decreasing = TRUE))[1]
+  d &lt;- confirmed_lineups[[which(order_keys == top_key &amp; lineup_teams == tm)[1]]]
+  tibble(team = tm, games_used = sum(keys == top_key), slot = 1:9, observed = d$player,
+         obp = d$obp, slg = d$slg, ops = d$ops, traditional_template = d$player[traditional_template(d)])
+}))
+knitr::kable(team_examples, col.names = c(&quot;Team&quot;, &quot;Games used&quot;, &quot;Slot&quot;, &quot;Observed&quot;, &quot;OBP 2024&quot;, &quot;SLG 2024&quot;,
+                                          &quot;OPS 2024&quot;, &quot;Traditional template&quot;))</code></pre>
+<table>
+<thead>
+<tr class="header">
+<th align="left">Team</th>
+<th align="right">Games used</th>
+<th align="right">Slot</th>
+<th align="left">Observed</th>
+<th align="right">OBP 2024</th>
+<th align="right">SLG 2024</th>
+<th align="right">OPS 2024</th>
+<th align="left">Traditional template</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Angels</td>
+<td align="right">2</td>
+<td align="right">1</td>
+<td align="left">Jorge Soler</td>
+<td align="right">0.338</td>
+<td align="right">0.442</td>
+<td align="right">0.780</td>
+<td align="left">Luis Rengifo</td>
+</tr>
+<tr class="even">
+<td align="left">Angels</td>
+<td align="right">2</td>
+<td align="right">2</td>
+<td align="left">Zach Neto</td>
+<td align="right">0.318</td>
+<td align="right">0.443</td>
+<td align="right">0.761</td>
+<td align="left">Nolan Schanuel</td>
+</tr>
+<tr class="odd">
+<td align="left">Angels</td>
+<td align="right">2</td>
+<td align="right">3</td>
+<td align="left">Mike Trout</td>
+<td align="right">0.325</td>
+<td align="right">0.541</td>
+<td align="right">0.866</td>
+<td align="left">Mike Trout</td>
+</tr>
+<tr class="even">
+<td align="left">Angels</td>
+<td align="right">2</td>
+<td align="right">4</td>
+<td align="left">Taylor Ward</td>
+<td align="right">0.323</td>
+<td align="right">0.426</td>
+<td align="right">0.749</td>
+<td align="left">Zach Neto</td>
+</tr>
+<tr class="odd">
+<td align="left">Angels</td>
+<td align="right">2</td>
+<td align="right">5</td>
+<td align="left">Logan O’Hoppe</td>
+<td align="right">0.303</td>
+<td align="right">0.409</td>
+<td align="right">0.712</td>
+<td align="left">Jorge Soler</td>
+</tr>
+<tr class="even">
+<td align="left">Angels</td>
+<td align="right">2</td>
+<td align="right">6</td>
+<td align="left">Nolan Schanuel</td>
+<td align="right">0.343</td>
+<td align="right">0.362</td>
+<td align="right">0.705</td>
+<td align="left">Taylor Ward</td>
+</tr>
+<tr class="odd">
+<td align="left">Angels</td>
+<td align="right">2</td>
+<td align="right">7</td>
+<td align="left">Luis Rengifo</td>
+<td align="right">0.347</td>
+<td align="right">0.417</td>
+<td align="right">0.764</td>
+<td align="left">Logan O’Hoppe</td>
+</tr>
+<tr class="even">
+<td align="left">Angels</td>
+<td align="right">2</td>
+<td align="right">8</td>
+<td align="left">Jo Adell</td>
+<td align="right">0.280</td>
+<td align="right">0.402</td>
+<td align="right">0.682</td>
+<td align="left">Jo Adell</td>
+</tr>
+<tr class="odd">
+<td align="left">Angels</td>
+<td align="right">2</td>
+<td align="right">9</td>
+<td align="left">Tim Anderson</td>
+<td align="right">0.237</td>
+<td align="right">0.226</td>
+<td align="right">0.463</td>
+<td align="left">Tim Anderson</td>
+</tr>
+<tr class="even">
+<td align="left">Cardinals</td>
+<td align="right">6</td>
+<td align="right">1</td>
+<td align="left">Brendan Donovan</td>
+<td align="right">0.342</td>
+<td align="right">0.417</td>
+<td align="right">0.759</td>
+<td align="left">Willson Contreras</td>
+</tr>
+<tr class="odd">
+<td align="left">Cardinals</td>
+<td align="right">6</td>
+<td align="right">2</td>
+<td align="left">Iván Herrera</td>
+<td align="right">0.372</td>
+<td align="right">0.428</td>
+<td align="right">0.800</td>
+<td align="left">Iván Herrera</td>
+</tr>
+<tr class="even">
+<td align="left">Cardinals</td>
+<td align="right">6</td>
+<td align="right">3</td>
+<td align="left">Alec Burleson</td>
+<td align="right">0.314</td>
+<td align="right">0.420</td>
+<td align="right">0.734</td>
+<td align="left">Brendan Donovan</td>
+</tr>
+<tr class="odd">
+<td align="left">Cardinals</td>
+<td align="right">6</td>
+<td align="right">4</td>
+<td align="left">Willson Contreras</td>
+<td align="right">0.380</td>
+<td align="right">0.468</td>
+<td align="right">0.848</td>
+<td align="left">Alec Burleson</td>
+</tr>
+<tr class="even">
+<td align="left">Cardinals</td>
+<td align="right">6</td>
+<td align="right">5</td>
+<td align="left">Nolan Arenado</td>
+<td align="right">0.325</td>
+<td align="right">0.394</td>
+<td align="right">0.719</td>
+<td align="left">Masyn Winn</td>
+</tr>
+<tr class="odd">
+<td align="left">Cardinals</td>
+<td align="right">6</td>
+<td align="right">6</td>
+<td align="left">Masyn Winn</td>
+<td align="right">0.314</td>
+<td align="right">0.416</td>
+<td align="right">0.730</td>
+<td align="left">Nolan Arenado</td>
+</tr>
+<tr class="even">
+<td align="left">Cardinals</td>
+<td align="right">6</td>
+<td align="right">7</td>
+<td align="left">Jordan Walker</td>
+<td align="right">0.253</td>
+<td align="right">0.366</td>
+<td align="right">0.619</td>
+<td align="left">Pedro Pagés</td>
+</tr>
+<tr class="odd">
+<td align="left">Cardinals</td>
+<td align="right">6</td>
+<td align="right">8</td>
+<td align="left">Pedro Pagés</td>
+<td align="right">0.281</td>
+<td align="right">0.376</td>
+<td align="right">0.657</td>
+<td align="left">Jordan Walker</td>
+</tr>
+<tr class="even">
+<td align="left">Cardinals</td>
+<td align="right">6</td>
+<td align="right">9</td>
+<td align="left">Victor Scott II</td>
+<td align="right">0.219</td>
+<td align="right">0.283</td>
+<td align="right">0.502</td>
+<td align="left">Victor Scott II</td>
+</tr>
+<tr class="odd">
+<td align="left">Cubs</td>
+<td align="right">2</td>
+<td align="right">1</td>
+<td align="left">Ian Happ</td>
+<td align="right">0.341</td>
+<td align="right">0.441</td>
+<td align="right">0.782</td>
+<td align="left">Kyle Tucker</td>
+</tr>
+<tr class="even">
+<td align="left">Cubs</td>
+<td align="right">2</td>
+<td align="right">2</td>
+<td align="left">Kyle Tucker</td>
+<td align="right">0.408</td>
+<td align="right">0.585</td>
+<td align="right">0.993</td>
+<td align="left">Seiya Suzuki</td>
+</tr>
+<tr class="odd">
+<td align="left">Cubs</td>
+<td align="right">2</td>
+<td align="right">3</td>
+<td align="left">Seiya Suzuki</td>
+<td align="right">0.366</td>
+<td align="right">0.482</td>
+<td align="right">0.848</td>
+<td align="left">Ian Happ</td>
+</tr>
+<tr class="even">
+<td align="left">Cubs</td>
+<td align="right">2</td>
+<td align="right">4</td>
+<td align="left">Michael Busch</td>
+<td align="right">0.335</td>
+<td align="right">0.440</td>
+<td align="right">0.775</td>
+<td align="left">Michael Busch</td>
+</tr>
+<tr class="odd">
+<td align="left">Cubs</td>
+<td align="right">2</td>
+<td align="right">5</td>
+<td align="left">Carson Kelly</td>
+<td align="right">0.313</td>
+<td align="right">0.374</td>
+<td align="right">0.687</td>
+<td align="left">Nico Hoerner</td>
+</tr>
+<tr class="even">
+<td align="left">Cubs</td>
+<td align="right">2</td>
+<td align="right">6</td>
+<td align="left">Pete Crow-Armstrong</td>
+<td align="right">0.286</td>
+<td align="right">0.384</td>
+<td align="right">0.670</td>
+<td align="left">Dansby Swanson</td>
+</tr>
+<tr class="odd">
+<td align="left">Cubs</td>
+<td align="right">2</td>
+<td align="right">7</td>
+<td align="left">Nico Hoerner</td>
+<td align="right">0.335</td>
+<td align="right">0.373</td>
+<td align="right">0.708</td>
+<td align="left">Carson Kelly</td>
+</tr>
+<tr class="even">
+<td align="left">Cubs</td>
+<td align="right">2</td>
+<td align="right">8</td>
+<td align="left">Dansby Swanson</td>
+<td align="right">0.312</td>
+<td align="right">0.390</td>
+<td align="right">0.702</td>
+<td align="left">Pete Crow-Armstrong</td>
+</tr>
+<tr class="odd">
+<td align="left">Cubs</td>
+<td align="right">2</td>
+<td align="right">9</td>
+<td align="left">Nicky Lopez</td>
+<td align="right">0.312</td>
+<td align="right">0.294</td>
+<td align="right">0.606</td>
+<td align="left">Nicky Lopez</td>
+</tr>
+<tr class="even">
+<td align="left">Dodgers</td>
+<td align="right">5</td>
+<td align="right">1</td>
+<td align="left">Shohei Ohtani</td>
+<td align="right">0.390</td>
+<td align="right">0.646</td>
+<td align="right">1.036</td>
+<td align="left">Shohei Ohtani</td>
+</tr>
+<tr class="odd">
+<td align="left">Dodgers</td>
+<td align="right">5</td>
+<td align="right">2</td>
+<td align="left">Mookie Betts</td>
+<td align="right">0.372</td>
+<td align="right">0.491</td>
+<td align="right">0.863</td>
+<td align="left">Freddie Freeman</td>
+</tr>
+<tr class="even">
+<td align="left">Dodgers</td>
+<td align="right">5</td>
+<td align="right">3</td>
+<td align="left">Freddie Freeman</td>
+<td align="right">0.378</td>
+<td align="right">0.476</td>
+<td align="right">0.854</td>
+<td align="left">Mookie Betts</td>
+</tr>
+<tr class="odd">
+<td align="left">Dodgers</td>
+<td align="right">5</td>
+<td align="right">4</td>
+<td align="left">Will Smith</td>
+<td align="right">0.327</td>
+<td align="right">0.433</td>
+<td align="right">0.760</td>
+<td align="left">Teoscar Hernández</td>
+</tr>
+<tr class="even">
+<td align="left">Dodgers</td>
+<td align="right">5</td>
+<td align="right">5</td>
+<td align="left">Teoscar Hernández</td>
+<td align="right">0.339</td>
+<td align="right">0.501</td>
+<td align="right">0.840</td>
+<td align="left">Max Muncy</td>
+</tr>
+<tr class="odd">
+<td align="left">Dodgers</td>
+<td align="right">5</td>
+<td align="right">6</td>
+<td align="left">Max Muncy</td>
+<td align="right">0.358</td>
+<td align="right">0.494</td>
+<td align="right">0.852</td>
+<td align="left">Will Smith</td>
+</tr>
+<tr class="even">
+<td align="left">Dodgers</td>
+<td align="right">5</td>
+<td align="right">7</td>
+<td align="left">Andy Pages</td>
+<td align="right">0.305</td>
+<td align="right">0.407</td>
+<td align="right">0.712</td>
+<td align="left">Michael Conforto</td>
+</tr>
+<tr class="odd">
+<td align="left">Dodgers</td>
+<td align="right">5</td>
+<td align="right">8</td>
+<td align="left">Michael Conforto</td>
+<td align="right">0.309</td>
+<td align="right">0.450</td>
+<td align="right">0.759</td>
+<td align="left">Andy Pages</td>
+</tr>
+<tr class="even">
+<td align="left">Dodgers</td>
+<td align="right">5</td>
+<td align="right">9</td>
+<td align="left">Tommy Edman</td>
+<td align="right">0.294</td>
+<td align="right">0.417</td>
+<td align="right">0.711</td>
+<td align="left">Tommy Edman</td>
+</tr>
+<tr class="odd">
+<td align="left">Giants</td>
+<td align="right">5</td>
+<td align="right">1</td>
+<td align="left">Mike Yastrzemski</td>
+<td align="right">0.302</td>
+<td align="right">0.437</td>
+<td align="right">0.739</td>
+<td align="left">LaMonte Wade Jr.</td>
+</tr>
+<tr class="even">
+<td align="left">Giants</td>
+<td align="right">5</td>
+<td align="right">2</td>
+<td align="left">Willy Adames</td>
+<td align="right">0.331</td>
+<td align="right">0.462</td>
+<td align="right">0.793</td>
+<td align="left">Tyler Fitzgerald</td>
+</tr>
+<tr class="odd">
+<td align="left">Giants</td>
+<td align="right">5</td>
+<td align="right">3</td>
+<td align="left">Jung Hoo Lee</td>
+<td align="right">0.310</td>
+<td align="right">0.331</td>
+<td align="right">0.641</td>
+<td align="left">Willy Adames</td>
+</tr>
+<tr class="even">
+<td align="left">Giants</td>
+<td align="right">5</td>
+<td align="right">4</td>
+<td align="left">Matt Chapman</td>
+<td align="right">0.328</td>
+<td align="right">0.463</td>
+<td align="right">0.791</td>
+<td align="left">Heliot Ramos</td>
+</tr>
+<tr class="odd">
+<td align="left">Giants</td>
+<td align="right">5</td>
+<td align="right">5</td>
+<td align="left">Heliot Ramos</td>
+<td align="right">0.322</td>
+<td align="right">0.469</td>
+<td align="right">0.791</td>
+<td align="left">Matt Chapman</td>
+</tr>
+<tr class="even">
+<td align="left">Giants</td>
+<td align="right">5</td>
+<td align="right">6</td>
+<td align="left">LaMonte Wade Jr.</td>
+<td align="right">0.380</td>
+<td align="right">0.381</td>
+<td align="right">0.761</td>
+<td align="left">Mike Yastrzemski</td>
+</tr>
+<tr class="odd">
+<td align="left">Giants</td>
+<td align="right">5</td>
+<td align="right">7</td>
+<td align="left">Wilmer Flores</td>
+<td align="right">0.277</td>
+<td align="right">0.318</td>
+<td align="right">0.595</td>
+<td align="left">Jung Hoo Lee</td>
+</tr>
+<tr class="even">
+<td align="left">Giants</td>
+<td align="right">5</td>
+<td align="right">8</td>
+<td align="left">Patrick Bailey</td>
+<td align="right">0.298</td>
+<td align="right">0.339</td>
+<td align="right">0.637</td>
+<td align="left">Patrick Bailey</td>
+</tr>
+<tr class="odd">
+<td align="left">Giants</td>
+<td align="right">5</td>
+<td align="right">9</td>
+<td align="left">Tyler Fitzgerald</td>
+<td align="right">0.334</td>
+<td align="right">0.497</td>
+<td align="right">0.831</td>
+<td align="left">Wilmer Flores</td>
+</tr>
+</tbody>
+</table>
+<p>The examples show the same pattern. The template moves the highest-OBP hitter to the top even when the team bats him lower, for example LaMonte Wade Jr. (Giants, .380 OBP, sixth) and Willson Contreras (Cardinals, .380 OBP, fourth). It also moves the best OPS hitter out of the slot the team chose for him, for example Kyle Tucker (Cubs) from second to first.</p>
+</div>
+</div>
+<div id="conclusion-for-scope-review" class="section level2" number="14.5">
+<h2 number="14.5"><span class="header-section-number">14.5</span> Conclusion for Scope Review</h2>
+<ol style="list-style-type: decimal">
+<li>Applied exactly as written, the scope’s rules classify no 2025 half-inning as Traditional and one game as OPS-ranked. The two-group comparison planned in the scope cannot be carried out with this definition. This holds under both readings of Strategy B, with 2025 metrics, and without the PA threshold.</li>
+<li>The cause is the definition, not data quality. The input checks earlier in this document pass, and the observed lineups are verified against official MLB records.</li>
+<li>Strategies A and B are construction rules: given nine hitters and their metrics, they produce one specific order each. That design suits a simulation that bats the same nine hitters in both orders, which is also the scope’s stated objective of testing whether rearranging the same hitters improves expected production. As a description of how managers actually set lineups, the rules almost never hold.</li>
+<li>Moving forward requires a scope decision by the project team: either compare A and B by simulation, or redefine the observational groups with a looser rule fixed before any runs are examined. A looser rule would change the research question and must be reported as such. Neither option is implemented in this version.</li>
+</ol>
+</div>
+</div>
+<div id="session-information" class="section level1" number="15">
+<h1 number="15"><span class="header-section-number">15</span> Session Information</h1>
 <pre class="r"><code>sessionInfo()</code></pre>
 <pre><code>## R version 4.5.3 (2026-03-11)
 ## Platform: aarch64-apple-darwin20
@@ -3718,7 +4937,7 @@ knitr::kable(combination_inventory)</code></pre>
 ## LAPACK: /Library/Frameworks/R.framework/Versions/4.5-arm64/Resources/lib/libRlapack.dylib;  LAPACK version 3.12.1
 ## 
 ## locale:
-## [1] C.UTF-8/C.UTF-8/C.UTF-8/C/C.UTF-8/C.UTF-8
+## [1] en_US/en_US/en_US/C/en_US/en_US
 ## 
 ## time zone: America/New_York
 ## tzcode source: internal

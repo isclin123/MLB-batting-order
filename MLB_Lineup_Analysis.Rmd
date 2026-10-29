@@ -15,14 +15,16 @@ output:
 
 This Rmd is the single analysis entry point for the project. All subsequent lineup classification, exploratory analysis, statistical tests, and simulations will be added here rather than maintained in separate analysis scripts. The current version provides reproducible preprocessing of the three source datasets. Final lineup labels and between-group tests have not yet been produced. All prose, comments, and messages in this document must remain in English.
 
+**Key finding for scope review:** applying the scope's Traditional and OPS-ranked rules exactly as written to the confirmed 2025 sample produces an empty Traditional group and a single OPS-ranked game, so the planned two-group comparison cannot be run as specified. The section *Strict Application of the Scope's Classification Rules* near the end reports the counts, tests alternative readings, and explains the cause.
+
 The confirmed primary sample uses 2025 outcomes and 2024 official player metrics. All nine starters must have at least 100 PA in 2024, with the same threshold applied to all five teams. Only innings 1-9 and complete half-innings before the first batting-roster substitution are eligible. Missing player metrics are not imputed. Earlier multi-season tables below document source auditing; they are not pooled into the primary sample. The final single-season section and its exports are the handoff for classification.
 
 The original Excel files remain unchanged. Each Knit reads the source files from this directory, writes derived data to `processed/`, and writes quality checks to `quality/`. Derived files with the same names are regenerated on each run. Original fields, Excel row numbers, correction provenance, and issue flags are retained. Unverified information is not imputed by guesswork.
 
-Open this file in RStudio and click **Knit**, or run the following command from the project root:
+Open this file in RStudio and click **Knit**, or run the following command from the folder that contains this file:
 
 ```r
-rmarkdown::render("MLB/MLB_Lineup_Analysis.Rmd")
+rmarkdown::render("MLB_Lineup_Analysis.Rmd")
 ```
 
 ```{r setup, message=FALSE}
@@ -1129,7 +1131,7 @@ stopifnot(identical(ready_saved, classification_bundle))
 # Subsequent Analysis: Continue Updating This File
 
 1. Data preparation for the confirmed five-team 2025 sample is complete. Stop before classification, as requested.
-2. Before assigning labels, confirm any unresolved judgment calls about tied metrics or exact versus approximate matching. Do not tune classification rules using inning runs.
+2. The strict application of the scope's rules later in this document leaves the Traditional group empty. Before any labels are assigned, the project team must decide whether to compare the strategies by simulation or to redefine the observational groups. Do not tune classification rules using inning runs.
 3. Follow page 2 of the revised scope to construct the Traditional order: highest OBP, next-highest OBP, highest remaining OPS, highest remaining SLG, and highest remaining OPS. Sort the remaining four hitters by OPS. The OPS strategy reorders only the same first five hitters and leaves the last four unchanged.
 4. Preserve both/neither/unknown cases rather than forcing every observation into one of two strategies. Report classification coverage before comparing outcomes.
 5. Account for within-game dependence when comparing runs per half-inning by clustering on game_id. Interpret observational comparisons separately from simulations that reorder the same roster.
@@ -1201,7 +1203,260 @@ knitr::kable(feasibility_counts %>% select(scenario, diagnostic_group, team_game
 
 For a fixed roster and a fixed choice of the top five, there are 5! = 120 possible top-five permutations when slots 6-9 remain fixed. That combinatorial count is different from the two strategies in the scope and from the number of actual observed lineups. Strict and top-five-only counts above are conditional feasibility results, not final classifications or evidence of strategy effectiveness.
 
-An empty Traditional group prevents the proposed two-group comparison under these matching assumptions. Accepting all tied-metric permutations already gives exact matching its most permissive interpretation for the published rates. A similarity-based definition would change the classification question and requires user confirmation; it is not implemented here. Template overlap also means that A and B need not be distinct for every roster.
+An empty Traditional group prevents the proposed two-group comparison under these matching assumptions. Accepting all tied-metric permutations already gives exact matching its most permissive interpretation for the published rates. A similarity-based definition would change the classification question and requires user confirmation; it is not implemented here. Template overlap also means that A and B need not be distinct for every roster. The next section verifies this result with an independent implementation and explains it.
+
+# Strict Application of the Scope's Classification Rules
+
+This section answers one question for scope review: when the classification rules in the project scope are applied exactly as written to the confirmed 2025 sample, how many half-innings fall into each group? It then explains the result. Only batting slots and player metrics are used. Inning runs are never read, so nothing in this section depends on, or reveals, which strategy scores more. No labels are exported.
+
+## Rules as Written in the Scope
+
+Page 2 of `Final Project Scope_ MLB Batting Lineup.pdf` defines the two strategies for a given set of nine hitters:
+
+- **Strategy A, Traditional:** slot 1 is the highest OBP; slot 2 is the next-highest OBP; slot 3 is the highest OPS among the remaining hitters; slot 4 is the highest SLG among the remaining hitters; slot 5 is the next-highest OPS; slots 6-9 hold the remaining four hitters in descending OPS.
+- **Strategy B, OPS-ranked:** the same five hitters selected for slots 1-5 are reordered from highest to lowest OPS, and slots 6-9 stay identical to Strategy A.
+
+The summary table on page 3 labels Strategy B as "Best to Worst" (highest OPS through fifth-highest OPS). Read literally, that describes all nine hitters in descending OPS, which can differ from page 2 when a high-OBP, low-OPS hitter enters the Traditional top five. Both readings are tested.
+
+A lineup matches a strategy only if all nine observed slots agree with it. Published rates have three decimals, and every order permitted by tied values is accepted, which is the most permissive form of exact matching. The rules are applied to the actual starting nine of each team-game, and every eligible half-inning inherits the label of its game's starting lineup.
+
+## Group Counts
+
+Four scenarios are reported. Scenario 1 is the confirmed design. Scenarios 2-4 each change one assumption to test whether the result depends on it. Scenario 3 uses end-of-season 2025 metrics, which were not available when the lineups were set; it is a sensitivity check only.
+
+```{r strict-rule-group-counts}
+rule_metric <- c("obp", "obp", "ops", "slg", rep("ops", 5))
+# Slot j follows Strategy A when its batter has the maximal rule metric among slots j..9 (ties accepted).
+slot_follows_traditional <- function(d) vapply(1:9, function(j)
+  d[[rule_metric[j]]][j] == max(d[[rule_metric[j]]][j:9]), logical(1))
+# Page-2 Strategy B: some tie-permitted Traditional top five equals the observed top five,
+# the observed top five is in descending OPS, and slots 6-9 are the remaining hitters in descending OPS.
+matches_ops_page2 <- function(d) {
+  if (any(diff(d$ops[1:5]) > 0) || any(diff(d$ops[6:9]) > 0)) return(FALSE)
+  pick_top_five <- function(remaining, step) {
+    if (step > 5L) return(TRUE)
+    v <- d[[rule_metric[step]]]
+    candidates <- intersect(remaining[v[remaining] == max(v[remaining])], 1:5)
+    any(vapply(candidates, function(j) pick_top_five(setdiff(remaining, j), step + 1L), logical(1)))
+  }
+  pick_top_five(1:9, 1L)
+}
+# Page-3 table read literally: all nine hitters in descending OPS.
+matches_ops_page3 <- function(d) all(diff(d$ops) <= 0)
+strict_groups <- function(lineups, ops_rule) {
+  bind_rows(lapply(split(lineups, lineups$lineup_id), function(d) {
+    d <- d[order(d$slot), ]
+    tibble(lineup_id = d$lineup_id[1], team = d$team[1],
+           traditional = all(slot_follows_traditional(d)), ops_ranked = ops_rule(d))
+  })) %>% mutate(group = case_when(traditional & ops_ranked ~ "Both", traditional ~ "Traditional only",
+                                   ops_ranked ~ "OPS only", TRUE ~ "Neither"))
+}
+group_levels <- c("Traditional only", "OPS only", "Both", "Neither")
+count_groups <- function(groups, half_innings, scenario) {
+  tibble(group = group_levels) %>%
+    left_join(count(groups, group, name = "team_games"), by = "group") %>%
+    left_join(half_innings %>% inner_join(groups, by = "lineup_id") %>% count(group, name = "half_innings"),
+              by = "group") %>%
+    mutate(across(c(team_games, half_innings), ~ coalesce(.x, 0L)), scenario = scenario, .before = 1)
+}
+
+lineups_2024_metrics <- lineup_inputs_2025 %>%
+  transmute(lineup_id, team, slot, batter_id, player, pa = prior_pa, obp = prior_obp, slg = prior_slg, ops = prior_ops)
+lineups_2025_metrics <- lineups_2024_metrics %>% select(lineup_id, team, slot, batter_id, player) %>%
+  left_join(official_previous_seasons %>% filter(season == analysis_year) %>%
+              transmute(batter_id, obp = official_obp, slg = official_slg, ops = official_ops), by = "batter_id")
+half_innings_no_pa_threshold <- eligibility_2025 %>%
+  filter(in_confirmed_innings, technical_inputs_verified, complete_before_substitution,
+         all_nine_metrics_available, order_cycle_verified, all_nine_rates_verified) %>% select(lineup_id)
+lineups_no_pa_threshold <- metric_checks %>%
+  mutate(lineup_id = paste(team, game_id, "starting", sep = "_")) %>%
+  filter(lineup_id %in% half_innings_no_pa_threshold$lineup_id) %>%
+  transmute(lineup_id, team, slot, batter_id, player = official_name,
+            obp = official_obp, slg = official_slg, ops = official_ops)
+stopifnot(!anyNA(lineups_2025_metrics$ops), !anyNA(lineups_no_pa_threshold$ops),
+          all(table(lineups_no_pa_threshold$lineup_id) == 9L))
+
+strict_confirmed <- strict_groups(lineups_2024_metrics, matches_ops_page2)
+strict_page3 <- strict_groups(lineups_2024_metrics, matches_ops_page3)
+strict_same_season <- strict_groups(lineups_2025_metrics, matches_ops_page2)
+strict_no_pa_threshold <- strict_groups(lineups_no_pa_threshold, matches_ops_page2)
+# The independent implementation must reproduce the feasibility estimate above.
+strict_vs_feasibility <- strict_confirmed %>% inner_join(feasibility_checks, by = "lineup_id")
+stopifnot(nrow(strict_vs_feasibility) == nrow(feasibility_checks),
+          identical(strict_vs_feasibility$traditional, strict_vs_feasibility$a_exact),
+          identical(strict_vs_feasibility$ops_ranked, strict_vs_feasibility$b_exact))
+
+confirmed_half_innings <- classification_inputs_2025 %>% select(lineup_id)
+strict_group_counts <- bind_rows(
+  count_groups(strict_confirmed, confirmed_half_innings,
+               "1. Confirmed design: 2024 metrics, 100-PA threshold, page-2 rules"),
+  count_groups(strict_page3, confirmed_half_innings,
+               "2. As 1, but Strategy B = all nine in descending OPS (page-3 table)"),
+  count_groups(strict_same_season, confirmed_half_innings,
+               "3. As 1, but 2025 end-of-season metrics (sensitivity only)"),
+  count_groups(strict_no_pa_threshold, half_innings_no_pa_threshold,
+               "4. As 1, but no PA threshold (all nine starters have 2024 metrics)"))
+knitr::kable(strict_group_counts, col.names = c("Scenario", "Group", "Team-games", "Half-innings"))
+```
+
+```{r strict-rule-summary-values, include=FALSE}
+confirmed_counts <- strict_group_counts %>% filter(startsWith(scenario, "1."))
+group_n <- function(g, col = "half_innings") confirmed_counts[[col]][confirmed_counts$group == g]
+scenario_traditional <- strict_group_counts %>% filter(group %in% c("Traditional only", "Both")) %>%
+  group_by(scenario) %>% summarise(n = sum(team_games), .groups = "drop")
+```
+
+Under the confirmed design, the Traditional group contains **`r group_n("Traditional only")` half-innings**, the OPS-ranked group contains **`r group_n("OPS only")` half-innings** from **`r group_n("OPS only", "team_games")` team-game**, and **`r group_n("Neither")` of `r nrow(classification_inputs_2025)` half-innings** match neither strategy. No lineup matches both. The planned two-sample comparison of runs per half-inning therefore cannot be run under the rules as written. The Traditional group is empty in every scenario (`r max(scenario_traditional$n)` Traditional team-games in any scenario), so the result does not depend on the page-2 versus page-3 reading, the metric season, or the PA threshold. The independent implementation reproduces the feasibility estimate in the previous section exactly.
+
+## The One Matched Lineup
+
+The single OPS-ranked match is shown next to the two templates built from the same nine hitters. For display, ties in the templates are broken by the observed order.
+
+```{r strict-rule-matched-lineup}
+traditional_template <- function(d) {
+  remaining <- 1:9; picks <- integer()
+  for (j in 1:9) {
+    v <- d[[rule_metric[j]]]
+    k <- remaining[which.max(v[remaining])]
+    picks <- c(picks, k); remaining <- setdiff(remaining, k)
+  }
+  picks  # Observed slot of the batter that the Traditional template places in slot j.
+}
+matched_ids <- strict_confirmed$lineup_id[strict_confirmed$group != "Neither"]
+matched_lineups <- bind_rows(lapply(matched_ids, function(id) {
+  d <- lineups_2024_metrics %>% filter(lineup_id == id) %>% arrange(slot)
+  a <- traditional_template(d)
+  b <- c(a[1:5][order(-d$ops[a[1:5]], a[1:5])], a[6:9])
+  tibble(lineup_id = id, date = classification_inputs_2025$date[match(id, classification_inputs_2025$lineup_id)],
+         slot = 1:9, observed = d$player, obp = d$obp, slg = d$slg, ops = d$ops,
+         traditional_template = d$player[a], ops_ranked_template = d$player[b])
+}))
+knitr::kable(matched_lineups, col.names = c("Lineup", "Date", "Slot", "Observed", "OBP 2024", "SLG 2024",
+                                            "OPS 2024", "Traditional template", "OPS-ranked template"))
+```
+
+This lineup is simply all nine hitters in descending 2024 OPS. It fails the Traditional rule at slot 2: Freddie Freeman had a higher 2024 OBP (.378) than Mookie Betts (.372), so the template bats Freeman second, while the observed lineup bats Betts second.
+
+## Why No Lineup Matches the Traditional Rule
+
+The diagnostics below use the `r nrow(strict_confirmed)` team-game lineups of the confirmed design.
+
+### Each Rule Checked on Its Own
+
+Each slot's rule is checked separately: does the batter in that slot have the highest value of the rule's metric among the batters in that slot and all later slots? A lineup matches Strategy A only if every row below holds at the same time.
+
+```{r strict-rule-slot-checks}
+confirmed_lineups <- split(lineups_2024_metrics, lineups_2024_metrics$lineup_id)
+confirmed_lineups <- lapply(confirmed_lineups, function(d) d[order(d$slot), ])
+slot_checks <- t(vapply(confirmed_lineups, slot_follows_traditional, logical(9)))
+rule_descriptions <- c("Slot 1 has the highest OBP", "Slot 2 has the highest remaining OBP",
+  "Slot 3 has the highest remaining OPS", "Slot 4 has the highest remaining SLG",
+  "Slot 5 has the highest remaining OPS")
+first_kept <- apply(slot_checks, 1, function(ok) if (all(ok)) 9L else which(!ok)[1] - 1L)
+slot_rule_table <- bind_rows(
+  tibble(rule = rule_descriptions, lineups_passing = colSums(slot_checks)[1:5]),
+  tibble(rule = "Slots 6-9 are in descending OPS", lineups_passing = sum(apply(slot_checks[, 6:9], 1, all))),
+  tibble(rule = "All nine slots follow Strategy A", lineups_passing = sum(first_kept == 9L))) %>%
+  mutate(share = sprintf("%.1f%%", 100 * lineups_passing / length(confirmed_lineups)))
+knitr::kable(slot_rule_table, col.names = c("Rule", "Lineups passing", "Share of lineups"))
+leading_slots <- sapply(1:5, function(k) sum(first_kept >= k))
+knitr::kable(tibble(slots = c("Slot 1", paste0("Slots 1-", 2:5)), lineups_following_all = leading_slots),
+             col.names = c("Leading slots", "Lineups following every rule in these slots"))
+```
+
+No single rule holds in more than half of the lineups. Following the rules in order, `r leading_slots[1]` lineups have the highest-OBP hitter leading off, `r leading_slots[2]` also have the next-highest OBP batting second, and **`r leading_slots[3]` also satisfy the slot-3 rule**. The bottom of the order is also restrictive: slots 6-9 are in exact descending OPS in `r sum(apply(slot_checks[, 6:9], 1, all))` lineups. A random order would satisfy that last condition 1 time in 24 (4.2%); traditional lineup practice does not require it either, for example when a catcher or a fast runner bats ninth.
+
+### Where the Best Hitter Bats
+
+Traditional lineups place the best hitter third and a power hitter fourth. The table shows where each lineup's best hitter by each metric actually bats, and the figure repeats the OPS column.
+
+```{r strict-rule-best-hitter}
+best_hitter_slots <- bind_rows(lapply(confirmed_lineups, function(d) tibble(
+  highest_obp = d$slot[which.max(d$obp)], highest_ops = d$slot[which.max(d$ops)],
+  highest_slg = d$slot[which.max(d$slg)], template_slot3 = traditional_template(d)[3])))
+best_hitter_table <- tibble(slot = 1:9) %>% bind_cols(
+  as_tibble(lapply(best_hitter_slots, function(v) as.vector(table(factor(v, levels = 1:9))))))
+knitr::kable(best_hitter_table, col.names = c("Observed slot", "Highest OBP", "Highest OPS", "Highest SLG",
+                                              "Template's slot-3 hitter"))
+best_hitter_names <- bind_rows(lapply(confirmed_lineups, function(d) d[which.max(d$ops), ])) %>%
+  count(team, player, slot, name = "lineups") %>% arrange(desc(lineups)) %>% filter(lineups >= 10)
+knitr::kable(best_hitter_names, col.names = c("Team", "Best hitter by 2024 OPS", "Observed slot", "Lineups"))
+```
+
+```{r strict-rule-best-hitter-figure, fig.width=7, fig.height=3.6, fig.cap="Batting slot of each lineup's best hitter by 2024 OPS. Blue marks slots 1-2; traditional practice places this hitter third."}
+best_ops_counts <- as.vector(table(factor(best_hitter_slots$highest_ops, levels = 1:9)))
+old_par <- par(mar = c(3.6, 1, 3.2, 1), bg = "#fcfcfb")
+mids <- barplot(best_ops_counts, names.arg = 1:9, col = ifelse(1:9 <= 2, "#2a78d6", "#c3c2b7"),
+                border = NA, space = 0.35, axes = FALSE, ylim = c(0, max(best_ops_counts) * 1.2),
+                col.axis = "#52514e", cex.names = 0.9)
+abline(h = 0, col = "#c3c2b7")
+text(mids, best_ops_counts, labels = best_ops_counts, pos = 3, col = "#52514e", cex = 0.85, xpd = TRUE)
+mtext("Lineups by batting slot of the best hitter (highest 2024 OPS)", side = 3, line = 1.8,
+      adj = 0, col = "#0b0b0b", cex = 0.95)
+mtext(sprintf("Slots 1-2: %d of %d lineups. Slot 3: %d.", sum(best_ops_counts[1:2]),
+              sum(best_ops_counts), best_ops_counts[3]), side = 3, line = 0.6, adj = 0, col = "#52514e", cex = 0.8)
+mtext("Observed batting slot", side = 1, line = 2.3, col = "#52514e", cex = 0.85)
+par(old_par)
+```
+
+The best hitter by 2024 OPS bats first or second in **`r sum(best_ops_counts[1:2])` of `r sum(best_ops_counts)` lineups** and third in only `r best_ops_counts[3]`. The hitter whom the Traditional template places third bats first or second in `r sum(best_hitter_slots$template_slot3 <= 2)` lineups. In this five-team sample, most of the `r sum(best_ops_counts[1:2])` lineups with the best hitter in slot 1 or 2 come from four players: Shohei Ohtani leading off for the Dodgers, and Rafael Devers (Giants), Kyle Tucker (Cubs), and Willson Contreras (Cardinals) batting second. Contreras also bats fourth, the traditional cleanup slot, in many other Cardinals lineups, so the pattern is not uniform across teams. This placement is consistent with modern lineup practice, which moves the strongest hitters to the top of the order to give them more plate appearances. The scope's Traditional rule instead fills slots 1-2 by OBP and reserves slot 3 for the best remaining OPS, so it conflicts with how these teams use their best hitters.
+
+The `r best_ops_counts[9]` lineups whose best 2024 OPS bats ninth all involve Tyler Fitzgerald (Giants), whose .831 OPS came from 341 PA in 2024. Prior-season rates for partial-season players can differ from how managers judge them a year later.
+
+### Size of the Misses
+
+For each lineup, the table measures how far the first broken rule was missed: the gap between the highest available value of the rule's metric and the value of the batter actually placed in that slot.
+
+```{r strict-rule-miss-size}
+miss_size <- bind_rows(lapply(confirmed_lineups, function(d) {
+  ok <- slot_follows_traditional(d)
+  j <- which(!ok)[1]; v <- d[[rule_metric[j]]]
+  tibble(first_broken_slot = j, metric = toupper(rule_metric[j]), gap = max(v[j:9]) - v[j])
+}))
+knitr::kable(miss_size %>% group_by(first_broken_slot, metric) %>% summarise(
+  lineups = n(), median_gap = sprintf("%.3f", median(gap)), gap_at_most_010 = sum(gap <= 0.010),
+  .groups = "drop"), col.names = c("First broken slot", "Metric", "Lineups", "Median gap", "Gap of .010 or less"))
+slot2_misses <- miss_size %>% filter(first_broken_slot == 2L)
+```
+
+Two kinds of failure dominate. Most lineups break the rule at slot 1, by a wide OBP margin: the leadoff hitter is usually not the highest-OBP starter. Among the `r nrow(slot2_misses)` lineups that first break the rule at slot 2, `r sum(slot2_misses$gap <= 0.010)` miss by .010 OBP or less (median `r sprintf("%.3f", median(slot2_misses$gap))`). An exact rule treats a .006 OBP difference, such as Freeman versus Betts, as decisive, although such differences are well within the noise of a season's statistics.
+
+### Lineups Change From Game to Game
+
+```{r strict-rule-lineup-variation}
+order_keys <- vapply(confirmed_lineups, function(d) paste(d$batter_id, collapse = ","), character(1))
+lineup_teams <- vapply(confirmed_lineups, function(d) d$team[1], character(1))
+lineup_variation <- tibble(team = lineup_teams, order_key = order_keys) %>% group_by(team) %>%
+  summarise(team_games = n(), distinct_orders = n_distinct(order_key),
+            most_used_order_games = max(table(order_key)), .groups = "drop")
+knitr::kable(lineup_variation, col.names = c("Team", "Team-games", "Distinct nine-player orders",
+                                             "Games with the most-used order"))
+```
+
+Each team uses many different orders, and no order is used in more than `r max(lineup_variation$most_used_order_games)` of the sampled games. Managers adjust lineups for rest days, opposing pitchers, platoon matchups, and current form, none of which enter a rule based on prior-season OBP, OPS, and SLG.
+
+### Most-Used Lineup of Each Team Against the Template
+
+```{r strict-rule-team-examples}
+team_examples <- bind_rows(lapply(sort(unique(lineup_teams)), function(tm) {
+  keys <- order_keys[lineup_teams == tm]
+  top_key <- names(sort(table(keys), decreasing = TRUE))[1]
+  d <- confirmed_lineups[[which(order_keys == top_key & lineup_teams == tm)[1]]]
+  tibble(team = tm, games_used = sum(keys == top_key), slot = 1:9, observed = d$player,
+         obp = d$obp, slg = d$slg, ops = d$ops, traditional_template = d$player[traditional_template(d)])
+}))
+knitr::kable(team_examples, col.names = c("Team", "Games used", "Slot", "Observed", "OBP 2024", "SLG 2024",
+                                          "OPS 2024", "Traditional template"))
+```
+
+The examples show the same pattern. The template moves the highest-OBP hitter to the top even when the team bats him lower, for example LaMonte Wade Jr. (Giants, .380 OBP, sixth) and Willson Contreras (Cardinals, .380 OBP, fourth). It also moves the best OPS hitter out of the slot the team chose for him, for example Kyle Tucker (Cubs) from second to first.
+
+## Conclusion for Scope Review
+
+1. Applied exactly as written, the scope's rules classify no 2025 half-inning as Traditional and one game as OPS-ranked. The two-group comparison planned in the scope cannot be carried out with this definition. This holds under both readings of Strategy B, with 2025 metrics, and without the PA threshold.
+2. The cause is the definition, not data quality. The input checks earlier in this document pass, and the observed lineups are verified against official MLB records.
+3. Strategies A and B are construction rules: given nine hitters and their metrics, they produce one specific order each. That design suits a simulation that bats the same nine hitters in both orders, which is also the scope's stated objective of testing whether rearranging the same hitters improves expected production. As a description of how managers actually set lineups, the rules almost never hold.
+4. Moving forward requires a scope decision by the project team: either compare A and B by simulation, or redefine the observational groups with a looser rule fixed before any runs are examined. A looser rule would change the research question and must be reported as such. Neither option is implemented in this version.
 
 # Session Information
 
