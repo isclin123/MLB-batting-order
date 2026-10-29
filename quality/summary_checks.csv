@@ -1,0 +1,15 @@
+"metric","value"
+"stats_nonempty_rows",212
+"stats_validated_rows",192
+"stats_conflicting_rows",16
+"stats_invalid_PA_rows",7
+"probability_rows",511
+"valid_probability_vectors",511
+"probability_source_SLG_disabled",511
+"pbp_rows",121588
+"pbp_exact_duplicates",0
+"pbp_conflicting_rows",0
+"pbp_unknown_PA_events",0
+"minigroups",28437
+"minigroups_end_below_3",117
+"pbp_records_matched_to_validated_stats",88191

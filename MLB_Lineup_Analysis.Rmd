@@ -1,0 +1,1210 @@
+---
+title: "MLB 2025 Batting Lineup: Data Preparation"
+author: "Math 534 Project"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: show
+    df_print: paged
+---
+
+# Project Entry Point and Current Scope
+
+This Rmd is the single analysis entry point for the project. All subsequent lineup classification, exploratory analysis, statistical tests, and simulations will be added here rather than maintained in separate analysis scripts. The current version provides reproducible preprocessing of the three source datasets. Final lineup labels and between-group tests have not yet been produced. All prose, comments, and messages in this document must remain in English.
+
+The confirmed primary sample uses 2025 outcomes and 2024 official player metrics. All nine starters must have at least 100 PA in 2024, with the same threshold applied to all five teams. Only innings 1-9 and complete half-innings before the first batting-roster substitution are eligible. Missing player metrics are not imputed. Earlier multi-season tables below document source auditing; they are not pooled into the primary sample. The final single-season section and its exports are the handoff for classification.
+
+The original Excel files remain unchanged. Each Knit reads the source files from this directory, writes derived data to `processed/`, and writes quality checks to `quality/`. Derived files with the same names are regenerated on each run. Original fields, Excel row numbers, correction provenance, and issue flags are retained. Unverified information is not imputed by guesswork.
+
+Open this file in RStudio and click **Knit**, or run the following command from the project root:
+
+```r
+rmarkdown::render("MLB/MLB_Lineup_Analysis.Rmd")
+```
+
+```{r setup, message=FALSE}
+required <- c("readxl", "dplyr", "tidyr", "stringi", "jsonlite", "knitr", "rmarkdown")
+missing_packages <- required[!vapply(required, requireNamespace, logical(1), quietly = TRUE)]
+if (length(missing_packages)) stop("Install the following packages first: ", paste(missing_packages, collapse = ", "))
+library(dplyr)
+library(tidyr)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = TRUE)
+# Knit uses the directory containing this Rmd, without machine-specific absolute paths.
+dir.create("processed", showWarnings = FALSE)
+dir.create("quality", showWarnings = FALSE)
+files <- c(stats = "Math 534 Baseball Project-2.xlsx",
+           probabilities = "MLB_2023_2026_5Teams_Player_Probabilities.xlsx",
+           pbp = "MLB_2023_2026_5Teams_PlayByPlay.xlsx")
+stopifnot(all(file.exists(files)))
+teams <- c("Dodgers", "Cubs", "Cardinals", "Angels", "Giants")
+clean_names <- function(x) {
+  x <- tolower(gsub("[^A-Za-z0-9]+", "_", x))
+  gsub("^_|_$", "", x)
+}
+name_key <- function(x) {
+  # Generate candidate identity keys; verify uniqueness separately without automatic fuzzy matching.
+  tolower(gsub("[^A-Za-z0-9]", "", stringi::stri_trans_general(x, "Latin-ASCII")))
+}
+normalize_id <- function(x) {
+  # Excel stores some integer IDs as strings ending in .0; never round arbitrary IDs.
+  x <- trimws(as.character(x))
+  sub("^([0-9]+)\\.0+$", "\\1", x)
+}
+read_source <- function(path) {
+  # State columns are empty for the first three seasons, so default guessing can infer logical types.
+  # Explicit types prevent two outs from becoming TRUE and base-state text from becoming NA.
+  types <- switch(path,
+    "Math 534 Baseball Project-2.xlsx" = c("text", "numeric", "text", rep("numeric", 18)),
+    "MLB_2023_2026_5Teams_Player_Probabilities.xlsx" = c("text", "numeric", "text", "text", rep("numeric", 10)),
+    "MLB_2023_2026_5Teams_PlayByPlay.xlsx" = c("text", "numeric", "date", "text", "numeric", "text",
+      "numeric", "text", "text", "text", "numeric", "numeric", "text", "numeric", "text", "text", "numeric"))
+  x <- readxl::read_excel(path, col_types = types, .name_repair = "minimal")
+  names(x) <- clean_names(names(x))
+  x$source_row <- seq_len(nrow(x)) + 1L
+  fields <- setdiff(names(x), "source_row")
+  empty <- rowSums(!is.na(x[fields])) == 0
+  attr(x, "blank_rows") <- sum(empty)
+  x <- x[!empty, ]
+  x <- x %>% mutate(across(where(is.character), ~na_if(trimws(.x), "")))
+  x
+}
+write_csv <- function(x, path) {
+  write.csv(as.data.frame(x), path, row.names = FALSE, na = "", fileEncoding = "UTF-8")
+}
+stats_raw <- read_source(files[["stats"]])
+prob_raw <- read_source(files[["probabilities"]])
+pbp_raw <- read_source(files[["pbp"]])
+source_manifest <- tibble(source = names(files), file = unname(files),
+                         md5 = unname(tools::md5sum(files)),
+                         nonempty_rows = c(nrow(stats_raw), nrow(prob_raw), nrow(pbp_raw)))
+knitr::kable(source_manifest)
+```
+
+# Confirmed Decisions and Official Source Supplement
+
+The user confirmed actual nine-player game lineups, verified MLB supplementation, previous complete-season official metrics, and complete half-innings before the first batting-roster substitution. On 2026-10-29, the user confirmed 2025 outcomes, 2024 metrics, and innings 1-9 only. After reviewing team coverage, the user revised the prior-season threshold from 150 to 100 PA for every starter on every team, retaining all five teams. Fixed rosters are reserved for simulation. No lineup labels are assigned here.
+
+Official responses are cached locally so subsequent rendering does not repeatedly download games. The cache preserves the source URL and retrieval timestamp. Failed requests remain explicit failures. Official values are used only after the game ID, date, team, and batting half agree with the supplied record. These are independently retrieved records, although the original workbook may itself originate from the same MLB provider.
+
+```{r official-source-download}
+dir.create("source_cache", showWarnings = FALSE)
+dir.create("source_cache/mlb_games", showWarnings = FALSE)
+scalar <- function(x, default = NA_character_) if (is.null(x) || !length(x)) default else as.character(x[[1]])
+num <- function(x) suppressWarnings(as.numeric(scalar(x)))
+cache_json <- function(url, path) {
+  if (file.exists(path)) {
+    old <- tryCatch(readRDS(path), error = function(e) NULL)
+    if (!is.null(old) && identical(old$url, url) && !is.null(old$data)) return(old)
+  }
+  answer <- tryCatch({
+    old_timeout <- getOption("timeout"); options(timeout = 30)
+    on.exit(options(timeout = old_timeout), add = TRUE)
+    data <- jsonlite::fromJSON(url, simplifyVector = FALSE)
+    if (!is.null(data$messageNumber)) stop(scalar(data$message))
+    list(url = url, retrieved_at_utc = format(Sys.time(), tz = "UTC", usetz = TRUE), data = data, error = NA_character_)
+  }, error = function(e) list(url = url, retrieved_at_utc = format(Sys.time(), tz = "UTC", usetz = TRUE),
+                             data = NULL, error = conditionMessage(e)))
+  if (!is.null(answer$data)) {
+    tmp <- paste0(path, ".tmp"); saveRDS(answer, tmp); file.rename(tmp, path)
+  }
+  answer
+}
+team_ids <- c(Dodgers = "119", Cubs = "112", Cardinals = "138", Angels = "108", Giants = "137")
+feed_fields <- paste(c("gamePk", "gameData", "datetime", "officialDate", "status", "abstractGameState",
+  "teams", "id", "name", "liveData", "boxscore", "players", "person", "fullName", "battingOrder",
+  "stats", "batting", "linescore", "innings", "num", "home", "away", "runs", "plays", "allPlays",
+  "atBatIndex", "about", "inning", "halfInning", "isComplete", "matchup", "batter", "result", "event",
+  "eventType", "awayScore", "homeScore", "count", "outs", "playEvents", "isSubstitution", "details",
+  "player", "position", "code", "runners", "movement", "start", "end", "isOut", "runner"), collapse = ",")
+game_ids <- sort(unique(normalize_id(pbp_raw$game_id)))
+fetch_game <- function(g) {
+  u <- paste0("https://statsapi.mlb.com/api/v1.1/game/", g, "/feed/live?fields=", feed_fields)
+  a <- cache_json(u, file.path("source_cache/mlb_games", paste0(g, ".rds")))
+  tibble(game_id = g, url = u, retrieved_at_utc = a$retrieved_at_utc,
+         download_ok = !is.null(a$data), error = a$error)
+}
+# Socket workers avoid macOS network-library failures after fork. Each game has its own cache file.
+workers <- 4L
+cluster <- parallel::makePSOCKcluster(workers)
+official_downloads <- tryCatch({
+  parallel::clusterCall(cluster, setwd, getwd())
+  parallel::clusterEvalQ(cluster, suppressPackageStartupMessages(library(dplyr)))
+  parallel::clusterExport(cluster, c("scalar", "cache_json", "fetch_game", "feed_fields"), envir = environment())
+  bind_rows(parallel::parLapply(cluster, game_ids, fetch_game))
+}, finally = parallel::stopCluster(cluster))
+knitr::kable(count(official_downloads, download_ok))
+```
+
+```{r official-source-tables}
+parse_game <- function(g) {
+  path <- file.path("source_cache/mlb_games", paste0(g, ".rds"))
+  if (!file.exists(path)) return(NULL)
+  saved_game <- readRDS(path); z <- saved_game$data
+  if (scalar(z$gamePk) != g) stop("Cached game identity mismatch: ", g)
+  date <- as.Date(scalar(z$gameData$datetime$officialDate))
+  meta <- starts <- batters <- halves <- plays <- changes <- list()
+  for (side in c("away", "home")) {
+    tid <- scalar(z$gameData$teams[[side]]$id)
+    team <- names(team_ids)[match(tid, team_ids)]
+    if (is.na(team)) next
+    half <- if (side == "away") "top" else "bottom"
+    meta[[side]] <- tibble(team = team, game_id = g, official_date = date, official_half = half,
+      official_state = scalar(z$gameData$status$abstractGameState),
+      official_game_runs = num(z$liveData$linescore$teams[[side]]$runs))
+    players <- z$liveData$boxscore$teams[[side]]$players
+    b <- bind_rows(lapply(players, function(p) {
+      order <- num(p$battingOrder)
+      if (is.na(order)) return(NULL)
+      tibble(team = team, game_id = g, batter_id = scalar(p$person$id),
+        official_name = scalar(p$person$fullName), order_code = as.integer(order),
+        slot = as.integer(order %/% 100), entry_sequence = as.integer(order %% 100))
+    }))
+    batters[[side]] <- b
+    starts[[side]] <- b %>% filter(entry_sequence == 0L)
+    halves[[side]] <- bind_rows(lapply(z$liveData$linescore$innings, function(i) {
+      r <- num(i[[side]]$runs)
+      # Missing runs for a home ninth that was never played is not a zero-run half-inning.
+      if (is.na(r)) return(NULL)
+      tibble(team = team, game_id = g, inning = as.integer(num(i$num)), inning_half = half, official_inning_runs = r)
+    }))
+  }
+  all_batters <- bind_rows(batters)
+  for (p in z$liveData$plays$allPlays) {
+    half <- scalar(p$about$halfInning); side <- if (half == "top") "away" else "home"
+    tid <- scalar(z$gameData$teams[[side]]$id); team <- names(team_ids)[match(tid, team_ids)]
+    index <- as.integer(num(p$atBatIndex)); inning <- as.integer(num(p$about$inning))
+    if (!is.na(team)) {
+      rr <- p$runners
+      runner_out_only <- length(rr) > 0 && all(vapply(rr, function(r) {
+        !is.null(r$movement$start) && isTRUE(r$movement$isOut) &&
+          scalar(r$details$runner$id) != scalar(p$matchup$batter$id)
+      }, logical(1)))
+      plays[[length(plays) + 1L]] <- tibble(team = team, game_id = g, play_index = index, inning = inning,
+        inning_half = half, official_batter_id = scalar(p$matchup$batter$id),
+        official_event = scalar(p$result$eventType), official_outs_after = num(p$count$outs),
+        official_score_after = num(p$result[[paste0(side, "Score")]]),
+        official_runner_out_only = runner_out_only)
+    }
+    for (e in p$playEvents) {
+      if (!isTRUE(e$isSubstitution)) next
+      id <- scalar(e$player$id)
+      # Only substitutions involving a player with an actual batting-order code affect the batting roster.
+      candidates <- all_batters %>% filter(batter_id == id, entry_sequence > 0L)
+      if (!nrow(candidates)) next
+      for (j in seq_len(nrow(candidates))) changes[[length(changes) + 1L]] <- tibble(
+        team = candidates$team[j], game_id = g, substitute_id = id, slot = candidates$slot[j],
+        substitution_play_index = index, substitution_inning = inning, substitution_half = half,
+        substitution_type = scalar(e$details$eventType))
+    }
+  }
+  list(meta = bind_rows(meta), starters = bind_rows(starts), batting_roster = all_batters,
+       half_scores = bind_rows(halves), plays = bind_rows(plays), substitutions = bind_rows(changes))
+}
+parsed_cache_path <- "source_cache/parsed_games.rds"
+parse_signature <- paste(deparse(body(parse_game)), collapse = "\n")
+game_hashes <- tools::md5sum(file.path("source_cache/mlb_games",
+  paste0(official_downloads$game_id[official_downloads$download_ok], ".rds")))
+old_parsed <- if (file.exists(parsed_cache_path)) readRDS(parsed_cache_path) else NULL
+if (!is.null(old_parsed) && identical(old_parsed$signature, parse_signature) && identical(old_parsed$hashes, game_hashes)) {
+  parsed <- old_parsed$data
+} else {
+  cluster <- parallel::makePSOCKcluster(4L)
+  parsed <- tryCatch({
+    parallel::clusterCall(cluster, setwd, getwd())
+    parallel::clusterEvalQ(cluster, suppressPackageStartupMessages(library(dplyr)))
+    parallel::clusterExport(cluster, c("parse_game", "scalar", "num", "team_ids"), envir = environment())
+    parallel::parLapply(cluster, official_downloads$game_id[official_downloads$download_ok], parse_game)
+  }, finally = parallel::stopCluster(cluster))
+  saveRDS(list(signature = parse_signature, hashes = game_hashes, data = parsed), parsed_cache_path)
+}
+combine_official <- function(name) bind_rows(lapply(parsed, `[[`, name))
+official_games <- combine_official("meta")
+official_starters <- combine_official("starters")
+official_batting_roster <- combine_official("batting_roster")
+official_half_scores <- combine_official("half_scores")
+official_plays <- combine_official("plays")
+official_substitutions <- combine_official("substitutions") %>% distinct()
+rm(parsed)
+stopifnot(!anyDuplicated(official_games[c("team", "game_id")]),
+          !anyDuplicated(official_plays[c("team", "game_id", "play_index")]))
+```
+
+```{r official-season-statistics}
+dir.create("source_cache/mlb_seasons", showWarnings = FALSE)
+fetch_season <- function(year, team = NA_character_) {
+  u <- paste0("https://statsapi.mlb.com/api/v1/stats?stats=season&group=hitting&season=", year,
+              "&sportIds=1&playerPool=ALL&limit=10000&gameType=R",
+              if (!is.na(team)) paste0("&teamId=", team_ids[[team]]) else "")
+  path <- file.path("source_cache/mlb_seasons", paste0(year, "_", ifelse(is.na(team), "all", team), ".rds"))
+  a <- cache_json(u, path)
+  if (is.null(a$data)) stop("Season statistics unavailable: ", u, ": ", a$error)
+  s <- a$data$stats[[1]]$splits
+  if (!length(s)) stop("Empty season response: ", u)
+  bind_rows(lapply(s, function(p) tibble(
+    team = team, season = as.integer(scalar(p$season)), batter_id = scalar(p$player$id),
+    official_name = scalar(p$player$fullName),
+    official_pa = num(p$stat$plateAppearances), official_ab = num(p$stat$atBats),
+    official_h = num(p$stat$hits), official_doubles = num(p$stat$doubles),
+    official_triples = num(p$stat$triples), official_hr = num(p$stat$homeRuns),
+    official_bb = num(p$stat$baseOnBalls), official_hbp = num(p$stat$hitByPitch),
+    official_sf = num(p$stat$sacFlies), official_sh = num(p$stat$sacBunts),
+    official_so = num(p$stat$strikeOuts), official_obp = num(p$stat$obp),
+    official_slg = num(p$stat$slg), official_ops = num(p$stat$ops),
+    source_url = u, retrieved_at_utc = a$retrieved_at_utc)))
+}
+official_previous_seasons <- bind_rows(lapply(2022:2025, fetch_season))
+official_team_stats <- bind_rows(lapply(2023:2026, function(y) bind_rows(lapply(teams, function(t) fetch_season(y, t)))))
+stopifnot(!anyDuplicated(official_previous_seasons[c("season", "batter_id")]),
+          !anyDuplicated(official_team_stats[c("team", "season", "batter_id")]))
+knitr::kable(official_team_stats %>% count(team, season, name = "official_player_rows"))
+```
+
+```{r postponed-date-verification}
+source_game_dates <- pbp_raw %>% transmute(team, game_id = normalize_id(game_id),
+  source_date = as.Date(date)) %>% distinct() %>% left_join(official_games, by = c("team", "game_id"))
+date_discrepancies <- source_game_dates %>% filter(source_date != official_date)
+dir.create("source_cache/mlb_schedules", showWarnings = FALSE)
+schedule_evidence <- bind_rows(lapply(unique(date_discrepancies$game_id), function(g) {
+  u <- paste0("https://statsapi.mlb.com/api/v1/schedule?sportId=1&gamePk=", g)
+  a <- cache_json(u, file.path("source_cache/mlb_schedules", paste0(g, ".rds")))
+  games <- unlist(lapply(a$data$dates, function(d) d$games), recursive = FALSE)
+  # A postponed game can appear twice: the old schedule entry and the actual played date.
+  candidates <- Filter(function(p) scalar(p$gamePk) == g && !is.null(p$rescheduleGameDate), games)
+  if (length(candidates) != 1L) return(tibble(game_id = g, reschedule_verified = FALSE,
+    scheduled_utc_date = NA_character_, scheduled_eastern_date = NA_character_, reschedule_date = NA_character_,
+    schedule_official_date = NA_character_, schedule_status = NA_character_, schedule_source_url = u))
+  p <- candidates[[1]]
+  tibble(game_id = g, scheduled_utc_date = substr(scalar(p$gameDate), 1, 10),
+    scheduled_eastern_date = format(as.POSIXct(scalar(p$gameDate), format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
+                                    tz = "America/New_York", format = "%Y-%m-%d"),
+    reschedule_date = scalar(p$rescheduleGameDate), schedule_official_date = scalar(p$officialDate),
+    schedule_status = scalar(p$status$detailedState), schedule_source_url = u,
+    reschedule_verified = !is.na(scalar(p$rescheduleGameDate)))
+}))
+date_corrections <- date_discrepancies %>% left_join(schedule_evidence, by = "game_id") %>% mutate(
+  date_correction_verified = coalesce(reschedule_verified & as.character(official_date) == reschedule_date &
+    (as.character(source_date) == scheduled_utc_date | as.character(source_date) == scheduled_eastern_date), FALSE))
+knitr::kable(date_corrections %>% select(team, game_id, source_date, official_date, date_correction_verified))
+```
+
+# Preprocessing Principles
+
+- Standardize the types of team, season, batter_id, game_id, and other join fields while retaining source row numbers.
+- Remove exact duplicates from derived tables. Quarantine conflicting values under the same key rather than arbitrarily accepting the first record.
+- Player statistics summarize full seasons. Passing quality checks **does not make them suitable for pregame classification**. Pregame statistical windows must be established later.
+- Define a `minigroup` provisionally as one team's offensive half-inning, keyed by team, game_id, inning, and inning_half.
+- Do not replace missing values with zero, treat every event as a completed plate appearance, or automatically change suspicious season labels.
+
+# Player Identity Mapping
+
+Both the play-by-play and probability datasets contain batter_id. Build a candidate mapping from normalized names to IDs, joining automatically only when a name key maps to one ID within the same team and season. Ambiguous mappings remain unresolved. Normalization handles accents and punctuation but does not constitute official identity verification; retain the mapping for manual review.
+
+```{r identities}
+pbp_raw <- pbp_raw %>% mutate(team = trimws(team), season = as.integer(season),
+                             batter_id = normalize_id(batter_id), game_id = normalize_id(game_id))
+prob_raw <- prob_raw %>% mutate(team = trimws(team), season = as.integer(season),
+                               batter_id = normalize_id(batter_id))
+stats_raw <- stats_raw %>% mutate(team = trimws(team), season = as.integer(season))
+identity_evidence <- bind_rows(
+  pbp_raw %>% distinct(team, season, player, batter_id) %>% mutate(source = "pbp"),
+  prob_raw %>% distinct(team, season, player, batter_id) %>% mutate(source = "probabilities")
+) %>% mutate(player_key = name_key(player))
+identity_map <- identity_evidence %>% group_by(team, season, player_key) %>%
+  summarise(n_ids = n_distinct(batter_id),
+            batter_id = if (n_distinct(batter_id) == 1L) first(batter_id) else NA_character_,
+            observed_names = paste(sort(unique(player)), collapse = "; "), .groups = "drop")
+identity_ambiguities <- identity_map %>% filter(n_ids != 1L)
+stats <- stats_raw %>% mutate(player_key = name_key(player)) %>%
+  left_join(identity_map, by = c("team", "season", "player_key")) %>%
+  mutate(identity_status = case_when(is.na(n_ids) ~ "unmatched", n_ids != 1L ~ "ambiguous",
+                                    TRUE ~ "unique_normalized_match"))
+stopifnot(nrow(stats) == nrow(stats_raw))
+knitr::kable(count(stats, identity_status))
+```
+
+# Dataset 1: Player Statistics
+
+Retain all input records in `player_stats_audited`. Include records in `player_stats_validated` only when identity is unique, conflicts are absent, and required checks pass. Do not fill missing PA from other seasons or incompatible statistical definitions. Independently recalculate SLG from H, 2B, 3B, HR, and AB for validation. HBP and SF, which are needed to verify OBP, are absent from this table, so OBP cannot be fully verified here.
+
+```{r stats-cleaning}
+stats <- stats %>% rename(doubles = `2b`, triples = `3b`) %>%
+  mutate(singles_calculated = h - doubles - triples - hr,
+         total_bases_calculated = h + doubles + 2 * triples + 3 * hr,
+         slg_calculated = if_else(ab > 0, total_bases_calculated / ab, NA_real_),
+         avg_calculated = if_else(ab > 0, h / ab, NA_real_),
+         ops_calculated = obp + slg,
+         so_pa_calculated = if_else(pa > 0, so / pa, NA_real_))
+# Compare all original numeric fields; exclude source row numbers from exact-duplicate detection.
+stat_fields <- c("team", "season", "player_key", "g", "ab", "r", "h", "doubles",
+                 "triples", "hr", "rbi", "bb", "so", "sb", "cs", "avg", "obp", "slg", "ops", "pa", "so_pa")
+stats$exact_duplicate <- duplicated(as.data.frame(stats[stat_fields]))
+versions <- stats %>% filter(!exact_duplicate) %>% count(team, season, player_key, name = "n_versions")
+stats <- stats %>% left_join(versions, by = c("team", "season", "player_key")) %>%
+  mutate(conflicting_key = n_versions > 1L,
+         invalid_pa = is.na(pa) | pa <= 0 | pa < ab,
+         invalid_counts = is.na(ab) | ab <= 0 | is.na(h) | h < 0 | h > ab |
+           is.na(singles_calculated) | singles_calculated < 0 |
+           if_any(all_of(c("g", "doubles", "triples", "hr", "bb", "so")), ~is.na(.x) | .x < 0 | .x %% 1 != 0),
+         invalid_rates = is.na(obp) | obp < 0 | obp > 1 | is.na(slg) | slg < 0 | slg > 4 |
+           is.na(ops) | ops < 0 | ops > 5 | is.na(avg) | avg < 0 | avg > 1,
+         inconsistent_rates = coalesce(abs(slg - slg_calculated) > 0.0011, TRUE) |
+           coalesce(abs(avg - avg_calculated) > 0.0011, TRUE) |
+           coalesce(abs(ops - ops_calculated) > 0.0021, TRUE),
+         metadata_invalid = is.na(team) | !team %in% teams | is.na(season) | !season %in% 2023:2026,
+         eligible_season_stats = !exact_duplicate & !conflicting_key & !invalid_pa &
+           !invalid_counts & !invalid_rates & !inconsistent_rates & !metadata_invalid &
+           identity_status == "unique_normalized_match",
+         stats_timing = "full_season_not_pregame")
+# Prevent nonunique final join keys when different name keys map to the same player.
+id_collisions <- stats %>% filter(eligible_season_stats) %>%
+  count(team, season, batter_id) %>% filter(n > 1L)
+stats <- stats %>% left_join(id_collisions %>% transmute(team, season, batter_id, id_collision = TRUE),
+                            by = c("team", "season", "batter_id")) %>%
+  mutate(id_collision = coalesce(id_collision, FALSE),
+         eligible_season_stats = eligible_season_stats & !id_collision)
+stats_valid <- stats %>% filter(eligible_season_stats)
+stats_issues <- stats %>% filter(!eligible_season_stats)
+stats_coverage <- stats %>% group_by(team, season) %>%
+  summarise(raw_rows = n(), unique_names = n_distinct(player_key),
+            validated_rows = sum(eligible_season_stats),
+            validated_pa150 = sum(eligible_season_stats & pa >= 150, na.rm = TRUE), .groups = "drop")
+knitr::kable(stats_coverage)
+knitr::kable(stats_issues %>% select(source_row, team, season, player, pa, ab,
+                                    conflicting_key, invalid_pa, identity_status))
+```
+
+# Dataset 2: Player Outcome Probabilities
+
+Check the ranges, sums, and key uniqueness of the seven outcome probabilities. Passing these checks establishes numerical consistency, not the correctness of the underlying events or PA denominators.
+
+Preserve the original SLG as `slg_source` and exclude it from usable metrics. Check whether it matches the incorrect formula that divides the weighted sum of hit probabilities by PA again. The probability table does not contain AB, so SLG cannot be independently corrected with confidence. Join `slg_from_validated_stats` only from validated player statistics, leaving unmatched values missing. This joined value still represents a full season.
+
+```{r probability-cleaning}
+probs <- prob_raw %>% rename(p_single = single, p_double = double, p_triple = triple,
+                            p_home_run = home_run, p_walk_hbp = walk_hbp,
+                            p_error_interference = error_interference, p_out = out,
+                            slg_source = slg, prob_sum_source = prob_sum)
+pcols <- c("p_single", "p_double", "p_triple", "p_home_run", "p_walk_hbp", "p_error_interference", "p_out")
+probs$exact_duplicate <- duplicated(as.data.frame(probs[setdiff(names(probs), "source_row")]))
+prob_versions <- probs %>% filter(!exact_duplicate) %>% count(team, season, batter_id, name = "n_versions")
+probs <- probs %>% left_join(prob_versions, by = c("team", "season", "batter_id")) %>%
+  mutate(prob_sum_calculated = rowSums(pick(all_of(pcols))),
+         invalid_probability = if_any(all_of(pcols), ~is.na(.x) | .x < 0 | .x > 1),
+         invalid_sum = is.na(prob_sum_calculated) | abs(prob_sum_calculated - 1) > 1e-8,
+         supplied_sum_mismatch = is.na(prob_sum_source) | abs(prob_sum_calculated - prob_sum_source) > 1e-8,
+         invalid_pa = is.na(pa) | pa <= 0 | pa %% 1 != 0,
+         conflicting_key = n_versions > 1L,
+         weighted_hit_probability = p_single + 2*p_double + 3*p_triple + 4*p_home_run,
+         slg_matches_suspect_formula = abs(slg_source - weighted_hit_probability / pa) < 1e-8,
+         slg_source_usable = FALSE,
+         eligible_probability_vector = !exact_duplicate & !invalid_probability & !invalid_sum &
+           !supplied_sum_mismatch & !invalid_pa & !conflicting_key &
+           !is.na(team) & team %in% teams & !is.na(season) & season %in% 2023:2026 & !is.na(batter_id)) %>%
+  left_join(stats_valid %>% select(team, season, batter_id, slg_from_validated_stats = slg,
+                                  obp_from_validated_stats = obp, ops_from_validated_stats = ops,
+                                  pa_from_validated_stats = pa),
+            by = c("team", "season", "batter_id")) %>%
+  mutate(pa_difference_stats = pa - pa_from_validated_stats,
+         probability_timing = "full_season_not_pregame")
+stopifnot(nrow(probs) == nrow(prob_raw))
+knitr::kable(probs %>% summarise(rows = n(), valid_vectors = sum(eligible_probability_vector),
+                                suspect_slg_formula_matches = sum(slg_matches_suspect_formula, na.rm = TRUE),
+                                validated_slg_available = sum(!is.na(slg_from_validated_stats))))
+```
+
+# Dataset 3: Play-by-Play Data
+
+## Event and Field Standardization
+
+Standardize synonymous event labels while preserving their original names. The plate-appearance status of `Runner Out` is unclear and remains unresolved. Stolen-base, pickoff, and wild-pitch events do not advance the batting order. The original runner_movements field contains both Python literals and JSON structures. Preserve these strings at this stage without unsafe evaluation or unverified base-state reconstruction.
+
+```{r pbp-cleaning}
+event_aliases <- c(groundout = "field_out", flyout = "field_out", lineout = "field_out",
+                   pop_out = "field_out", bunt_groundout = "field_out", bunt_lineout = "field_out",
+                   bunt_pop_out = "field_out", forceout = "force_out", grounded_into_dp = "grounded_into_double_play",
+                   fielders_choice = "fielders_choice", fielders_choice_out = "fielders_choice_out",
+                   catcher_interference = "catcher_interf")
+pa_events <- c("field_out", "strikeout", "single", "double", "triple", "home_run", "walk",
+               "intent_walk", "hit_by_pitch", "force_out", "grounded_into_double_play", "sac_fly",
+               "sac_bunt", "field_error", "fielders_choice", "fielders_choice_out", "double_play",
+               "strikeout_double_play", "sac_fly_double_play", "catcher_interf", "triple_play")
+non_pa_events <- c("caught_stealing_2b", "caught_stealing_3b", "caught_stealing_home",
+                   "pickoff_caught_stealing_2b", "pickoff_caught_stealing_3b", "pickoff_1b",
+                   "pickoff_2b", "pickoff_3b", "stolen_base_2b", "stolen_base_3b", "stolen_base_home", "wild_pitch")
+pbp <- pbp_raw %>% rename(event_source = event, inning_half_source = inning_half,
+                         outs_before_source = outs_before, outs_added_source = outs_added) %>%
+  mutate(date = as.Date(date), inning = as.integer(inning), play_index = as.integer(play_index),
+         inning_half = tolower(inning_half_source), event_token = clean_names(event_source),
+         event = if_else(event_token %in% names(event_aliases), unname(event_aliases[event_token]), event_token),
+         completed_pa = case_when(event %in% pa_events ~ TRUE, event %in% non_pa_events ~ FALSE,
+                                  TRUE ~ NA),
+         runner_format = case_when(grepl("'movement'", runner_movements, fixed = TRUE) ~ "python_literal_nested",
+                                   grepl('"runner_id"', runner_movements, fixed = TRUE) ~ "json_flat", TRUE ~ "other"),
+         minigroup_id = paste(team, game_id, inning, inning_half, sep = "_"),
+         metadata_invalid = is.na(team) | !team %in% teams | is.na(season) | !season %in% 2023:2026 |
+           is.na(game_id) | is.na(inning) | inning < 1 | is.na(inning_half) | !inning_half %in% c("top", "bottom") |
+           is.na(date) | as.integer(format(date, "%Y")) != season,
+         invalid_outs = is.na(outs_after) | outs_after < 0 | outs_after > 3 | outs_after %% 1 != 0,
+         invalid_runs = is.na(runs_scored) | runs_scored < 0 | runs_scored %% 1 != 0)
+pbp <- pbp %>% left_join(date_corrections %>% select(team, game_id,
+  date_corrected_to = official_date, date_correction_verified), by = c("team", "game_id")) %>%
+  mutate(date_source = date, date_correction_verified = coalesce(date_correction_verified, FALSE),
+         date = if_else(date_correction_verified, date_corrected_to, date))
+pbp$exact_duplicate <- duplicated(as.data.frame(pbp[setdiff(names(pbp), "source_row")]))
+pbp_versions <- pbp %>% filter(!exact_duplicate) %>% count(team, game_id, play_index, name = "n_versions")
+pbp <- pbp %>% left_join(pbp_versions, by = c("team", "game_id", "play_index")) %>%
+  mutate(conflicting_key = n_versions > 1L) %>% arrange(team, game_id, play_index)
+# Resolve only cases with official identities, runner-only evidence, and the same next-inning batter.
+pbp <- pbp %>% left_join(official_games, by = c("team", "game_id")) %>%
+  left_join(official_plays %>% select(team, game_id, play_index, official_batter_id,
+    official_event, official_outs_after, official_score_after, official_runner_out_only),
+    by = c("team", "game_id", "play_index")) %>%
+  group_by(team, game_id) %>% arrange(play_index, .by_group = TRUE) %>%
+  mutate(next_record_batter_id = lead(batter_id), next_record_inning = lead(inning),
+    official_game_identity_verified = coalesce(date == official_date & inning_half == official_half &
+      official_state == "Final", FALSE),
+    official_play_identity_verified = official_game_identity_verified &
+      coalesce(batter_id == official_batter_id & outs_after == official_outs_after, FALSE),
+    runner_only_resolution = is.na(completed_pa) & event %in% c("other_out", "runner_out") &
+      official_play_identity_verified & coalesce(official_runner_out_only, FALSE) & outs_after == 3 &
+      coalesce(next_record_batter_id == batter_id & next_record_inning == inning + 1L, FALSE),
+    completed_pa = if_else(runner_only_resolution, FALSE, completed_pa),
+    pa_resolution_basis = case_when(runner_only_resolution ~ "official_runner_out_and_same_batter_next_inning",
+                                   is.na(completed_pa) ~ "unresolved", TRUE ~ "event_dictionary")) %>% ungroup()
+resolved_runner_events <- pbp %>% filter(runner_only_resolution) %>% select(source_row, team, game_id,
+  play_index, batter_id, event, official_event, next_record_batter_id, next_record_inning, pa_resolution_basis)
+event_dictionary <- pbp %>% count(event_source, event, completed_pa, name = "records")
+knitr::kable(event_dictionary)
+```
+
+## Out States and Half-Inning Structure
+
+The previous record's outs_after within the same half-inning provides a candidate value for the current record's outs_before. A complete half-inning starts with zero outs, but completeness cannot be fully established from these files. Therefore, name the reconstructed field `outs_before_candidate` rather than treating it as verified. Missing base states remain NA. Half-innings ending with fewer than three outs may represent walk-off endings or incomplete records and require box-score verification.
+
+```{r pbp-states}
+# Retain exact duplicates in the audit table; exclude duplicates and conflicting keys from candidates.
+pbp_candidate <- pbp %>% filter(!exact_duplicate, !conflicting_key, !metadata_invalid) %>%
+  group_by(team, game_id, inning, inning_half) %>% arrange(play_index, .by_group = TRUE) %>%
+  mutate(outs_before_candidate = lag(outs_after, default = 0),
+         outs_candidate_basis = if_else(row_number() == 1L, "assume_complete_half_inning_start", "previous_record"),
+         outs_added_candidate = outs_after - outs_before_candidate,
+         invalid_out_transition = outs_added_candidate < 0 | outs_added_candidate > 3,
+         supplied_outs_mismatch = !is.na(outs_before_source) & outs_before_source != outs_before_candidate,
+         supplied_added_mismatch = !is.na(outs_added_source) & outs_added_source != outs_added_candidate,
+         state_chain_invalid = any(invalid_outs | invalid_out_transition |
+                                     supplied_outs_mismatch | supplied_added_mismatch, na.rm = TRUE)) %>% ungroup()
+valid_bases <- c("Empty", "1B", "2B", "3B", "1B,2B", "1B,3B", "2B,3B", "1B,2B,3B")
+pbp_candidate <- pbp_candidate %>% mutate(
+  bases_before_valid_or_missing = is.na(bases_before) | bases_before %in% valid_bases,
+  bases_after_valid_or_missing = is.na(bases_after) | bases_after %in% valid_bases)
+state_coverage <- pbp_candidate %>% group_by(season) %>%
+  summarise(records = n(), missing_outs_before = sum(is.na(outs_before_source)),
+            missing_bases_before = sum(is.na(bases_before)), missing_bases_after = sum(is.na(bases_after)),
+            missing_outs_added = sum(is.na(outs_added_source)),
+            supplied_outs_mismatches = sum(supplied_outs_mismatch),
+            supplied_added_mismatches = sum(supplied_added_mismatch), .groups = "drop")
+knitr::kable(state_coverage)
+```
+
+## Join Coverage and Candidate Minigroup Summaries
+
+Join only unique validated statistical keys, not the original conflicting records. Half-inning runs are candidate sums of runs_scored and still require reconciliation with external game scores. Set every lineup_label to `not_classified`; successful preprocessing does not establish a Traditional or OPS classification.
+
+```{r joins-minigroups}
+pbp_joined <- pbp_candidate %>% left_join(
+  stats_valid %>% select(team, season, batter_id, season_obp = obp, season_slg = slg, season_ops = ops),
+  by = c("team", "season", "batter_id")) %>% mutate(has_validated_season_stats = !is.na(season_ops))
+stopifnot(nrow(pbp_joined) == nrow(pbp_candidate))
+join_coverage <- pbp_joined %>% group_by(team, season) %>%
+  summarise(events = n(), matched = sum(has_validated_season_stats),
+            matched_fraction = mean(has_validated_season_stats), .groups = "drop")
+unmatched_players <- pbp_joined %>% filter(!has_validated_season_stats) %>%
+  count(team, season, batter_id, player, name = "events") %>% arrange(desc(events))
+minigroups <- pbp_joined %>% group_by(minigroup_id, team, season, game_id, date, inning, inning_half) %>%
+  summarise(n_events = n(), n_known_completed_pa = sum(completed_pa %in% TRUE),
+            n_unknown_pa_events = sum(is.na(completed_pa)),
+            inning_runs_candidate = if (any(invalid_runs)) NA_real_ else sum(runs_scored),
+            end_outs = last(outs_after), first_play_index = first(play_index), last_play_index = last(play_index),
+            state_chain_invalid = any(state_chain_invalid),
+            all_observed_batters_have_stats = all(has_validated_season_stats), .groups = "drop") %>%
+  mutate(end_status = case_when(end_outs == 3 ~ "three_outs_recorded",
+                               end_outs < 3 ~ "walkoff_or_incomplete_needs_verification", TRUE ~ "invalid"),
+         extra_innings = inning > 9,
+         lineup_label = "not_classified", eligible_primary_analysis = FALSE)
+knitr::kable(join_coverage, digits = 3)
+knitr::kable(count(minigroups, end_status))
+```
+
+# Extended Preprocessing: Coverage, Denominators, and Historical Metrics
+
+This stage reconciles the three local datasets without treating agreement between potentially related sources as independent verification. All newly computed rates describe the events present in the supplied file, not necessarily complete official season totals. No source season labels are changed automatically.
+
+## Observed Event Counts and Rate Denominators
+
+Separate completed plate appearances from non-batting events and unknown events. Walks, hit-by-pitches, sacrifices, and catcher interference do not count as at-bats. A sacrifice-fly double play contributes one sacrifice fly. Unknown event types remain unresolved and prevent a player-season from being marked unambiguous. See the MLB definitions of [at-bats](https://www.mlb.com/glossary/standard-stats/at-bat) and [plate appearances](https://www.mlb.com/glossary/standard-stats/plate-appearance).
+
+```{r observed-counts}
+count_fields <- c("observed_pa", "observed_ab", "observed_h", "observed_doubles", "observed_triples",
+                  "observed_hr", "observed_bb", "observed_hbp", "observed_sf", "observed_sh",
+                  "observed_ci", "observed_so", "observed_tb", "unknown_events")
+event_counts <- pbp_joined %>% mutate(
+  observed_pa = as.integer(completed_pa %in% TRUE),
+  observed_bb = as.integer(event %in% c("walk", "intent_walk")),
+  observed_hbp = as.integer(event == "hit_by_pitch"),
+  observed_sf = as.integer(event %in% c("sac_fly", "sac_fly_double_play")),
+  observed_sh = as.integer(event == "sac_bunt"), observed_ci = as.integer(event == "catcher_interf"),
+  observed_h = as.integer(event %in% c("single", "double", "triple", "home_run")),
+  observed_doubles = as.integer(event == "double"), observed_triples = as.integer(event == "triple"),
+  observed_hr = as.integer(event == "home_run"),
+  observed_so = as.integer(event %in% c("strikeout", "strikeout_double_play")),
+  observed_tb = case_when(event == "single" ~ 1L, event == "double" ~ 2L,
+                          event == "triple" ~ 3L, event == "home_run" ~ 4L, TRUE ~ 0L),
+  observed_ab = observed_pa - observed_bb - observed_hbp - observed_sf - observed_sh - observed_ci,
+  unknown_events = as.integer(is.na(completed_pa)))
+safe_rate <- function(numerator, denominator) ifelse(denominator > 0, numerator / denominator, NA_real_)
+observed_stats <- event_counts %>% group_by(team, season, batter_id) %>%
+  summarise(player = first(player), first_observed_date = min(date), last_observed_date = max(date),
+            observed_games = n_distinct(game_id), across(all_of(count_fields), sum), .groups = "drop") %>%
+  mutate(observed_avg = safe_rate(observed_h, observed_ab),
+         observed_slg = safe_rate(observed_tb, observed_ab),
+         observed_obp = safe_rate(observed_h + observed_bb + observed_hbp,
+                                 observed_ab + observed_bb + observed_hbp + observed_sf),
+         observed_ops = observed_obp + observed_slg,
+         event_mapping_unambiguous = unknown_events == 0L,
+         coverage_status = "supplied_events_only_not_official_season_totals")
+stopifnot(all(event_counts$observed_ab %in% 0:1),
+          all(observed_stats$observed_pa == with(observed_stats,
+            observed_ab + observed_bb + observed_hbp + observed_sf + observed_sh + observed_ci)))
+knitr::kable(observed_stats %>% group_by(season) %>% summarise(player_team_rows = n(),
+  observed_pa = sum(observed_pa), unknown_events = sum(unknown_events), .groups = "drop"))
+```
+
+## Reconcile Player Statistics and Probabilities
+
+Compare source counts with the observed event totals. A match is local supporting evidence, not permission to change a season or copy a PA total. Report differences explicitly. Probability reconciliation uses the same seven categories and compares both PA and the category probabilities; unknown events are excluded from the known-PA denominator and separately flagged.
+
+```{r source-reconciliation}
+stats_reconciliation <- stats %>% left_join(observed_stats %>% select(-player),
+                                            by = c("team", "season", "batter_id")) %>%
+  mutate(pa_delta_observed = pa - observed_pa, ab_delta_observed = ab - observed_ab,
+         hits_delta_observed = h - observed_h, bb_delta_observed = bb - observed_bb,
+         so_delta_observed = so - observed_so,
+         count_fingerprint_matches = coalesce(ab == observed_ab & h == observed_h &
+           doubles == observed_doubles & triples == observed_triples & hr == observed_hr &
+           bb == observed_bb & so == observed_so & unknown_events == 0, FALSE))
+event_buckets <- event_counts %>% filter(completed_pa %in% TRUE) %>% mutate(bucket = case_when(
+  event == "single" ~ "p_single", event == "double" ~ "p_double", event == "triple" ~ "p_triple",
+  event == "home_run" ~ "p_home_run", event %in% c("walk", "intent_walk", "hit_by_pitch") ~ "p_walk_hbp",
+  event %in% c("field_error", "catcher_interf") ~ "p_error_interference", TRUE ~ "p_out")) %>%
+  count(team, season, batter_id, bucket, name = "observed_count")
+prob_reconciliation <- probs %>% select(team, season, batter_id, pa, all_of(pcols)) %>%
+  pivot_longer(all_of(pcols), names_to = "bucket", values_to = "source_probability") %>%
+  left_join(observed_stats %>% select(team, season, batter_id, observed_pa, unknown_events),
+            by = c("team", "season", "batter_id")) %>%
+  left_join(event_buckets, by = c("team", "season", "batter_id", "bucket")) %>%
+  mutate(observed_count = if_else(!is.na(observed_pa), coalesce(observed_count, 0L), NA_integer_),
+         observed_probability = safe_rate(observed_count, observed_pa),
+         probability_delta = source_probability - observed_probability,
+         pa_delta = pa - observed_pa)
+prob_reconciliation_summary <- prob_reconciliation %>% group_by(team, season, batter_id) %>%
+  summarise(pa_delta = first(pa_delta), unknown_events = first(unknown_events),
+            max_absolute_probability_delta = if (any(is.na(probability_delta))) NA_real_
+              else max(abs(probability_delta)), .groups = "drop") %>%
+  mutate(matches_observed_events = coalesce(pa_delta == 0 & unknown_events == 0 &
+           max_absolute_probability_delta < 1e-8, FALSE))
+probs <- probs %>% left_join(prob_reconciliation_summary, by = c("team", "season", "batter_id"))
+event_denominators <- event_counts %>% count(team, season, batter_id, name = "all_event_records")
+probs <- probs %>% left_join(event_denominators, by = c("team", "season", "batter_id")) %>%
+  mutate(source_pa_equals_all_event_records = pa == all_event_records,
+         passes_completed_pa_reconciliation = eligible_probability_vector & matches_observed_events)
+# Reconstruct a separate seven-category vector with completed PA as the denominator.
+# Do not overwrite source probabilities or claim that these are complete-season estimates.
+probabilities_observed <- event_buckets %>%
+  pivot_wider(names_from = bucket, values_from = observed_count, values_fill = 0) %>%
+  left_join(observed_stats %>% select(team, season, batter_id, observed_pa, unknown_events,
+                                     observed_slg, observed_obp, observed_ops),
+            by = c("team", "season", "batter_id")) %>%
+  mutate(across(all_of(pcols), ~safe_rate(.x, observed_pa)),
+         probability_sum = rowSums(pick(all_of(pcols))),
+         eligible_observed_vector = observed_pa > 0 & unknown_events == 0,
+         coverage_status = "completed_PA_in_supplied_events_only",
+         timing = "full_observed_season_not_pregame")
+stopifnot(all(abs(probabilities_observed$probability_sum - 1) < 1e-8),
+          !anyDuplicated(probabilities_observed[c("team", "season", "batter_id")]))
+# Candidate cross-season evidence: retain all exact matches, never silently relabel a source row.
+fingerprint_candidates <- stats %>% select(source_row, team, source_season = season, player, player_key,
+  ab, h, doubles, triples, hr, bb, so) %>% inner_join(
+    observed_stats %>% mutate(player_key = name_key(player)) %>%
+      filter(event_mapping_unambiguous) %>% select(team, candidate_season = season, player_key, batter_id,
+        ab = observed_ab, h = observed_h, doubles = observed_doubles, triples = observed_triples,
+        hr = observed_hr, bb = observed_bb, so = observed_so),
+    by = c("team", "player_key", "ab", "h", "doubles", "triples", "hr", "bb", "so"),
+    relationship = "many-to-many") %>% mutate(season_agrees = source_season == candidate_season,
+      disposition = "supporting_evidence_only_source_confirmation_required")
+knitr::kable(probs %>% count(season, matches_observed_events))
+knitr::kable(fingerprint_candidates %>% filter(!season_agrees) %>%
+              select(source_row, player, source_season, candidate_season, disposition))
+```
+
+In this run, `r sum(probs$source_pa_equals_all_event_records)` of `r nrow(probs)` source PA values equal all event-row counts. Only `r sum(probs$passes_completed_pa_reconciliation)` source vectors pass completed-PA reconciliation. The separate `player_probabilities_observed` table uses completed plate appearances; vectors affected by unknown events remain ineligible. Neither version is a pregame estimate.
+
+## Prior-Day Player Metrics Without Same-Day Leakage
+
+Aggregate by batter, season, and calendar date before applying a cumulative lag. Exclude every event on the current date, including both games of a doubleheader. Combine the player's observed history across the five supplied teams, but do not imply coverage of other teams. Reset at each season; opening-day values remain unavailable. The 150-PA flag in this exploratory table is retained for audit only. It does not control the primary sample, which uses the confirmed 100-PA threshold on previous-season official statistics. Prior unknown events also block this exploratory flag.
+
+```{r prior-day-metrics}
+daily_counts <- event_counts %>% group_by(batter_id, season, date) %>%
+  summarise(across(all_of(count_fields), sum), .groups = "drop") %>%
+  arrange(batter_id, season, date) %>% group_by(batter_id, season) %>%
+  mutate(across(all_of(count_fields), ~lag(cumsum(.x), default = 0), .names = "prior_{.col}"),
+         stats_through_date = lag(date)) %>% ungroup()
+pregame_metrics <- daily_counts %>% select(batter_id, season, date, stats_through_date, starts_with("prior_")) %>%
+  mutate(prior_obp = safe_rate(prior_observed_h + prior_observed_bb + prior_observed_hbp,
+         prior_observed_ab + prior_observed_bb + prior_observed_hbp + prior_observed_sf),
+         prior_slg = safe_rate(prior_observed_tb, prior_observed_ab), prior_ops = prior_obp + prior_slg,
+         meets_provisional_pa_threshold = prior_observed_pa >= 150 & prior_unknown_events == 0,
+         coverage_status = "prior_days_in_supplied_five_team_data_only")
+stopifnot(!anyDuplicated(pregame_metrics[c("batter_id", "season", "date")]),
+          all(is.na(pregame_metrics$stats_through_date) | pregame_metrics$stats_through_date < pregame_metrics$date))
+first_days <- pregame_metrics %>% group_by(batter_id, season) %>% slice_min(date, n = 1) %>% ungroup()
+stopifnot(all(first_days$prior_observed_pa == 0), all(is.na(first_days$prior_ops)))
+# Independently reconcile the cumulative endpoint against the complete daily totals.
+endpoint_check <- daily_counts %>% group_by(batter_id, season) %>% summarise(
+  total_pa = sum(observed_pa), endpoint_pa = last(prior_observed_pa) + last(observed_pa), .groups = "drop")
+stopifnot(all(endpoint_check$total_pa == endpoint_check$endpoint_pa))
+pbp_joined <- pbp_joined %>% left_join(pregame_metrics,
+                                      by = c("batter_id", "season", "date"))
+stopifnot(nrow(pbp_joined) == nrow(pbp_candidate))
+knitr::kable(pregame_metrics %>% group_by(season) %>% summarise(player_dates = n(),
+  dates_with_150_prior_pa = sum(meets_provisional_pa_threshold), .groups = "drop"))
+```
+
+## Game Coverage and Remaining Readiness Gates
+
+Internal checks can identify missing inning numbers or inconsistent metadata but cannot prove that all games, extra innings, plays, or substitutions were supplied. Games ending before nine offensive half-innings may be legitimate. Keep these checks as review flags rather than automatic exclusions. External game-score verification and batting-order reconstruction remain separate requirements.
+
+```{r coverage-readiness}
+game_coverage <- pbp_joined %>% group_by(team, season, game_id) %>% summarise(
+  dates = n_distinct(date), batting_halves = n_distinct(inning_half),
+  first_inning = min(inning), last_inning = max(inning), observed_half_innings = n_distinct(inning),
+  consecutive_innings_from_one = identical(sort(unique(inning)), seq_len(max(inning))),
+  unknown_pa_events = sum(is.na(completed_pa)),
+  runs_candidate = if (any(invalid_runs)) NA_real_ else sum(runs_scored),
+  .groups = "drop")
+minigroup_readiness <- pbp_joined %>% group_by(minigroup_id) %>% summarise(
+  all_observed_batters_have_prior_metrics = all(!is.na(prior_ops)),
+  all_observed_batters_meet_pa_threshold = all(meets_provisional_pa_threshold), .groups = "drop")
+minigroups <- minigroups %>% left_join(minigroup_readiness, by = "minigroup_id")
+local_only_readiness <- tibble(
+  requirement = c("Typed import and lossless joins", "Observed event count reconciliation",
+                  "Prior-day metrics without same-day outcomes", "Complete source season statistics",
+                  "Official game-score reconciliation", "Starting order and substitutions"),
+  status = c("implemented_and_checked", "implemented_differences_retained", "implemented_with_coverage_limits",
+             "unresolved_source_conflicts_and_gaps", "requires_external_verification", "not_yet_reconstructed"))
+knitr::kable(game_coverage %>% group_by(season) %>% summarise(team_games = n(),
+  games_with_extra_innings_in_file = sum(last_inning > 9),
+  games_with_inning_gaps = sum(!consecutive_innings_from_one), .groups = "drop"))
+knitr::kable(local_only_readiness)
+```
+
+The supplied file contains `r sum(game_coverage$last_inning > 9)` team-games with an observed inning beyond nine. This is a coverage warning, not evidence that no real games went to extra innings. Source conflicts and missing coverage remain unresolved rather than being filled with observed partial-season totals.
+
+# Verified Inputs for Future Minigroup Classification
+
+This section prepares evidence and candidate inputs only. Previous-season metrics cover all MLB teams for each player ID. They avoid the five-team coverage restriction of the earlier exploratory prior-day table. Source workbook records remain available for audit; the official supplementary table is used for the new preparation layer with the user's approval.
+
+## Source Corrections and Official Names
+
+Compare each source row with official same-team, same-season counts. For unmatched IDs, accept only a unique normalized-name match within that team and season. Do not guess a different year. Preserve both versions and a correction status.
+
+```{r official-stat-corrections}
+official_name_keys <- official_team_stats %>% mutate(player_key = name_key(official_name)) %>%
+  group_by(team, season, player_key) %>% filter(n() == 1L) %>% ungroup() %>%
+  select(team, season, player_key, name_matched_id = batter_id)
+official_stat_comparison <- stats %>% left_join(official_name_keys, by = c("team", "season", "player_key")) %>%
+  mutate(verified_join_id = coalesce(batter_id, name_matched_id)) %>%
+  left_join(official_team_stats, by = c("team", "season", "verified_join_id" = "batter_id")) %>%
+  mutate(official_match_available = !is.na(official_pa),
+    source_count_difference = coalesce(pa != official_pa | ab != official_ab | h != official_h |
+      doubles != official_doubles | triples != official_triples | hr != official_hr | bb != official_bb |
+      so != official_so, TRUE),
+    correction_status = case_when(!official_match_available ~ "no_same_team_season_official_match",
+      source_count_difference | conflicting_key ~ "use_official_record_preserve_source_for_audit",
+      TRUE ~ "source_counts_agree_with_official"))
+stopifnot(nrow(official_stat_comparison) == nrow(stats))
+official_identity_issues <- official_stat_comparison %>% filter(!official_match_available)
+knitr::kable(count(official_stat_comparison, correction_status))
+knitr::kable(official_identity_issues %>% select(source_row, team, season, player, correction_status))
+```
+
+## Official Lineup, Substitution, and Score Verification
+
+Initial batting-order codes end in 00; later entries have positive entry sequences. Require exactly nine distinct initial players occupying slots 1 through 9. Do not use the final battingOrder array as the starting lineup. Check official substitutions against replacement players in the box score, including pinch runners and defensive substitutions that change the batting roster.
+
+```{r classification-input-preparation}
+starter_checks <- official_starters %>% group_by(team, game_id) %>% summarise(
+  official_starters_valid = n() == 9L & n_distinct(batter_id) == 9L &
+    identical(sort(slot), 1:9), .groups = "drop")
+substitute_presence <- official_batting_roster %>% filter(entry_sequence > 0L) %>%
+  distinct(team, game_id, batter_id) %>% left_join(
+    official_substitutions %>% distinct(team, game_id, substitute_id) %>% mutate(action_found = TRUE),
+    by = c("team", "game_id", "batter_id" = "substitute_id"))
+substitution_checks <- substitute_presence %>% group_by(team, game_id) %>%
+  summarise(unlocated_substitutes = sum(is.na(action_found)), .groups = "drop")
+first_substitutions <- official_substitutions %>% group_by(team, game_id) %>%
+  summarise(first_substitution_play_index = min(substitution_play_index), .groups = "drop")
+game_verification <- pbp_joined %>% group_by(team, season, game_id) %>% summarise(
+  official_game_identity_verified = all(official_game_identity_verified),
+  observed_play_identities_verified = all(official_play_identity_verified), .groups = "drop") %>%
+  left_join(starter_checks, by = c("team", "game_id")) %>%
+  left_join(substitution_checks, by = c("team", "game_id")) %>%
+  left_join(first_substitutions, by = c("team", "game_id")) %>%
+  mutate(unlocated_substitutes = coalesce(unlocated_substitutes, 0L))
+lineup_inputs <- official_starters %>% left_join(game_verification, by = c("team", "game_id")) %>%
+  mutate(metric_season = season - 1L) %>% left_join(
+    official_previous_seasons %>% select(-team) %>% rename(metric_season = season,
+      metric_name = official_name, metric_source_url = source_url, metric_retrieved_at = retrieved_at_utc),
+    by = c("metric_season", "batter_id")) %>%
+  mutate(previous_season_metrics_available = !is.na(official_obp) & !is.na(official_slg) & !is.na(official_ops) &
+           !is.na(official_ab) & official_ab > 0 & !is.na(official_pa) & official_pa > 0,
+         metrics_precede_game_season = metric_season < season)
+lineup_metric_coverage <- lineup_inputs %>% group_by(team, season, game_id) %>% summarise(
+  n_missing_previous_season_metrics = sum(!previous_season_metrics_available),
+  n_previous_pa_below_150 = sum(is.na(official_pa) | official_pa < 150),
+  minimum_previous_pa = if (any(is.na(official_pa))) NA_real_ else min(official_pa), .groups = "drop")
+half_verification <- pbp_joined %>% group_by(minigroup_id) %>% summarise(
+  all_play_identities_verified = all(official_play_identity_verified),
+  known_pa_events_only = all(!is.na(completed_pa)), .groups = "drop")
+minigroups <- minigroups %>% left_join(official_half_scores, by = c("team", "game_id", "inning", "inning_half")) %>%
+  left_join(game_verification, by = c("team", "season", "game_id")) %>%
+  left_join(lineup_metric_coverage, by = c("team", "season", "game_id")) %>%
+  left_join(half_verification, by = "minigroup_id") %>% mutate(
+    inning_runs_match_official = coalesce(inning_runs_candidate == official_inning_runs, FALSE),
+    before_first_roster_substitution = unlocated_substitutes == 0L &
+      (is.na(first_substitution_play_index) | last_play_index < first_substitution_play_index),
+    complete_before_substitution = before_first_roster_substitution & end_outs == 3,
+    technical_inputs_verified = coalesce(official_game_identity_verified & official_starters_valid &
+      all_play_identities_verified & known_pa_events_only & inning_runs_match_official & !state_chain_invalid, FALSE),
+    classification_input_status = "source_audit_layer_not_primary_sample",
+    lineup_label = "not_classified", eligible_primary_analysis = FALSE)
+threshold_impact <- bind_rows(lapply(c(0L, 50L, 100L, 150L), function(threshold) {
+  passes <- lineup_inputs %>% group_by(team, game_id) %>% summarise(
+    all_nine_pass = n() == 9L & all(previous_season_metrics_available & official_pa >= threshold), .groups = "drop")
+  candidate <- minigroups %>% left_join(passes, by = c("team", "game_id")) %>%
+    filter(technical_inputs_verified, complete_before_substitution, all_nine_pass)
+  tibble(minimum_previous_season_pa = threshold, eligible_half_innings_if_selected = nrow(candidate),
+         eligible_team_games_if_selected = n_distinct(paste(candidate$team, candidate$game_id)))
+}))
+official_missing_halves <- anti_join(official_half_scores, minigroups,
+                                    by = c("team", "game_id", "inning", "inning_half"))
+stopifnot(nrow(minigroups) == n_distinct(pbp_joined$minigroup_id),
+          !anyDuplicated(lineup_inputs[c("team", "game_id", "slot")]),
+          all(lineup_inputs$metrics_precede_game_season))
+knitr::kable(threshold_impact)
+knitr::kable(minigroups %>% summarise(half_innings = n(),
+  technical_inputs_verified = sum(technical_inputs_verified),
+  verified_complete_before_substitution = sum(technical_inputs_verified & complete_before_substitution),
+  source_score_disagreements = sum(!inning_runs_match_official)))
+```
+
+## Complete Official Event Layer and Decision Impact
+
+The official event layer includes events omitted from the workbook, preserves source-row links where available, and supplies cumulative-score differences for run increments. Missing workbook events are supplemented, not invented. Extra innings remain in this audit table but are excluded from the confirmed primary sample. A line-score entry absent for an abandoned half-inning remains missing rather than becoming zero.
+
+```{r official-complete-preclassification}
+official_events_complete <- official_plays %>% left_join(official_games, by = c("team", "game_id")) %>%
+  mutate(season = as.integer(format(official_date, "%Y")),
+    completed_pa = case_when(official_event %in% pa_events ~ TRUE,
+      official_event %in% non_pa_events ~ FALSE,
+      official_event %in% c("other_out", "runner_out") & official_runner_out_only ~ FALSE, TRUE ~ NA),
+    minigroup_id = paste(team, game_id, inning, inning_half, sep = "_")) %>%
+  group_by(team, game_id) %>% arrange(play_index, .by_group = TRUE) %>%
+  mutate(official_runs_increment = official_score_after - lag(official_score_after, default = 0)) %>% ungroup() %>%
+  left_join(pbp %>% select(team, game_id, play_index, source_row, source_runs = runs_scored,
+                           source_batter_id = batter_id, date_source), by = c("team", "game_id", "play_index")) %>%
+  mutate(supplemented_event = is.na(source_row),
+         source_batter_agrees = is.na(source_batter_id) | source_batter_id == official_batter_id)
+official_minigroups <- official_events_complete %>% group_by(minigroup_id, team, season, game_id,
+  official_date, inning, inning_half) %>% summarise(
+    first_play_index = min(play_index), last_play_index = max(play_index), n_events = n(),
+    n_supplemented_events = sum(supplemented_event), n_completed_pa = sum(completed_pa %in% TRUE),
+    known_pa_events_only = all(!is.na(completed_pa)), source_batters_agree = all(source_batter_agrees),
+    official_feed_final = all(official_state == "Final"),
+    end_outs = last(official_outs_after), calculated_official_runs = sum(official_runs_increment),
+    valid_run_increments = all(!is.na(official_runs_increment) & official_runs_increment >= 0), .groups = "drop") %>%
+  left_join(official_half_scores, by = c("team", "game_id", "inning", "inning_half")) %>%
+  left_join(game_verification %>% select(team, season, game_id, official_game_identity_verified,
+    official_starters_valid, unlocated_substitutes, first_substitution_play_index),
+    by = c("team", "season", "game_id")) %>%
+  left_join(lineup_metric_coverage, by = c("team", "season", "game_id")) %>%
+  mutate(official_score_reconciles = coalesce(calculated_official_runs == official_inning_runs, FALSE),
+    complete_before_substitution = end_outs == 3 & unlocated_substitutes == 0L &
+      (is.na(first_substitution_play_index) | last_play_index < first_substitution_play_index),
+    technical_inputs_verified = coalesce(official_game_identity_verified & official_starters_valid &
+      source_batters_agree & official_feed_final & known_pa_events_only & valid_run_increments &
+      official_score_reconciles, FALSE),
+    lineup_label = "not_classified", eligible_primary_analysis = FALSE,
+    classification_input_status = "official_audit_layer_not_primary_sample")
+threshold_impact <- bind_rows(lapply(c(0L, 50L, 100L, 150L), function(threshold) {
+  passes <- lineup_inputs %>% group_by(team, game_id) %>% summarise(
+    all_nine_pass = n() == 9L & all(previous_season_metrics_available & official_pa >= threshold), .groups = "drop")
+  candidate <- official_minigroups %>% left_join(passes, by = c("team", "game_id")) %>%
+    filter(technical_inputs_verified, complete_before_substitution, all_nine_pass)
+  bind_rows(lapply(c(FALSE, TRUE), function(include_extras) {
+    selected <- candidate %>% filter(include_extras | inning <= 9)
+    tibble(minimum_previous_season_pa = threshold, include_extra_innings = include_extras,
+      eligible_half_innings_if_selected = nrow(selected),
+      eligible_team_games_if_selected = n_distinct(paste(selected$team, selected$game_id)))
+  }))
+}))
+official_game_score_audit <- official_events_complete %>% group_by(team, game_id) %>%
+  summarise(event_run_total = sum(official_runs_increment),
+            official_game_runs = first(official_game_runs), .groups = "drop") %>%
+  mutate(game_score_reconciles = event_run_total == official_game_runs)
+stopifnot(!anyDuplicated(official_minigroups$minigroup_id),
+  all(official_game_score_audit$game_score_reconciles),
+  sum(official_minigroups$n_events) == nrow(official_events_complete))
+knitr::kable(threshold_impact)
+```
+
+# Confirmed Single-Season Sample
+
+The user confirmed all parameters below on 2026-10-29. Previous-season statistics are predictors, not additional outcome seasons. Multi-season caches remain source audit material. A half-inning is the outcome unit; a team-game starting lineup is the linked predictor unit. The same game may contribute multiple half-innings, so these are not independent experimental replicates.
+
+```{r single-season-planning}
+analysis_year <- 2025L
+metric_year <- analysis_year - 1L
+minimum_prior_pa <- 100L
+include_extra_innings <- FALSE
+selection_confirmed <- !is.na(analysis_year) && !is.na(minimum_prior_pa) && !is.na(include_extra_innings)
+season_sample_options <- bind_rows(lapply(c(0L, 50L, 100L, 150L), function(threshold) {
+  passes <- lineup_inputs %>% group_by(team, game_id) %>% summarise(
+    all_nine_pass = n() == 9L & all(previous_season_metrics_available & official_pa >= threshold), .groups = "drop")
+  official_minigroups %>% left_join(passes, by = c("team", "game_id")) %>%
+    filter(technical_inputs_verified, complete_before_substitution, inning <= 9, all_nine_pass) %>%
+    group_by(season) %>% summarise(minimum_previous_season_pa = threshold,
+      candidate_half_innings = n(), candidate_team_games = n_distinct(paste(team, game_id)), .groups = "drop")
+}))
+decision_register <- tibble(
+  decision = c("Roster", "Supplementary source", "Player metrics", "Substitution policy",
+               "Outcome season", "Previous-season PA threshold", "Extra innings"),
+  status = rep("confirmed", 7),
+  choice = c("Actual nine-player game roster", "Verified MLB official data",
+    "Previous complete season, all MLB teams", "Complete half-innings before first batting-roster substitution",
+    "2025 outcomes with 2024 predictors", paste0("Every starter on every team has at least ", minimum_prior_pa,
+      " PA; missing metrics are not imputed"),
+    "Innings 1-9 only; extra innings retained outside the primary sample"))
+knitr::kable(season_sample_options)
+knitr::kable(decision_register)
+stopifnot(selection_confirmed, metric_year < analysis_year)
+```
+
+## Verify the Batting-Order Cycle
+
+Number completed plate appearances across the entire team-game, without resetting at inning boundaries. Compare the resulting 1-9 cycle with official starters before the first batting-roster substitution. Non-PA events do not advance the slot. This verifies the observed order only; it does not construct Traditional or OPS templates or label their similarity.
+
+```{r verify-batting-order-cycle}
+order_events <- official_events_complete %>% filter(season == analysis_year) %>%
+  group_by(team, game_id) %>% arrange(play_index, .by_group = TRUE) %>%
+  mutate(completed_pa_index = cumsum(completed_pa %in% TRUE),
+         expected_slot = as.integer((completed_pa_index - 1L) %% 9L + 1L)) %>% ungroup() %>%
+  left_join(official_starters %>% select(team, game_id, expected_slot = slot,
+                                       expected_starter_id = batter_id),
+            by = c("team", "game_id", "expected_slot")) %>%
+  left_join(first_substitutions, by = c("team", "game_id")) %>%
+  mutate(before_substitution = is.na(first_substitution_play_index) | play_index < first_substitution_play_index,
+         order_match = coalesce(official_batter_id == expected_starter_id, FALSE))
+batting_order_audit <- order_events %>% filter(before_substitution) %>% group_by(team, game_id) %>%
+  summarise(pre_substitution_pa = sum(completed_pa %in% TRUE),
+            unknown_pre_substitution_events = sum(is.na(completed_pa)),
+            order_mismatches = sum(completed_pa %in% TRUE & !order_match), .groups = "drop") %>%
+  mutate(order_cycle_verified = pre_substitution_pa > 0 & unknown_pre_substitution_events == 0 & order_mismatches == 0)
+half_start_slots <- order_events %>% filter(completed_pa %in% TRUE) %>%
+  group_by(minigroup_id) %>% slice_min(play_index, n = 1, with_ties = FALSE) %>% ungroup() %>%
+  transmute(minigroup_id, starting_slot = expected_slot, first_batter_id = official_batter_id)
+knitr::kable(batting_order_audit %>% summarise(team_games_checked = n(),
+  completed_pa_checked = sum(pre_substitution_pa), mismatches = sum(order_mismatches)))
+```
+
+## Apply Confirmed Filters and Record Exclusions
+
+The flow table applies filters sequentially; removal counts must not be added to overlapping independent flags. Every 2025 half-inning remains in the eligibility audit with its first exclusion reason. The ready table contains no lineup-strategy labels. Rate checks use tolerances consistent with MLB's three-decimal published rates.
+
+```{r final-single-season-inputs}
+metric_checks <- lineup_inputs %>% filter(season == analysis_year) %>% mutate(
+  recalculated_slg = safe_rate(official_h + official_doubles + 2 * official_triples + 3 * official_hr, official_ab),
+  recalculated_obp = safe_rate(official_h + official_bb + official_hbp,
+    official_ab + official_bb + official_hbp + official_sf),
+  official_rate_checks_pass = coalesce(abs(official_slg - recalculated_slg) <= 0.00051 &
+    abs(official_obp - recalculated_obp) <= 0.00051 &
+    abs(official_ops - official_obp - official_slg) <= 0.0011, FALSE))
+roster_eligibility <- metric_checks %>% group_by(team, game_id) %>% summarise(
+  all_nine_metrics_available = n() == 9L & all(previous_season_metrics_available),
+  all_nine_meet_pa_threshold = n() == 9L & all(previous_season_metrics_available & official_pa >= minimum_prior_pa),
+  all_nine_rates_verified = n() == 9L & all(official_rate_checks_pass), .groups = "drop")
+eligibility_2025 <- official_minigroups %>% filter(season == analysis_year) %>%
+  left_join(roster_eligibility, by = c("team", "game_id")) %>%
+  left_join(batting_order_audit, by = c("team", "game_id")) %>%
+  left_join(half_start_slots, by = "minigroup_id") %>% mutate(
+    in_confirmed_innings = include_extra_innings | inning <= 9L,
+    meets_primary_conditions = coalesce(in_confirmed_innings & technical_inputs_verified &
+      complete_before_substitution & all_nine_metrics_available & all_nine_meet_pa_threshold, FALSE),
+    ready_for_classification = meets_primary_conditions & coalesce(order_cycle_verified & all_nine_rates_verified, FALSE),
+    exclusion_reason = case_when(!in_confirmed_innings ~ "extra_inning",
+      !technical_inputs_verified ~ "technical_verification_failed",
+      !complete_before_substitution ~ "incomplete_or_at_or_after_first_substitution",
+      !coalesce(all_nine_metrics_available, FALSE) ~ "missing_previous_season_metrics",
+      !coalesce(all_nine_meet_pa_threshold, FALSE) ~ paste0("at_least_one_starter_below_", minimum_prior_pa, "_PA"),
+      !coalesce(order_cycle_verified & all_nine_rates_verified, FALSE) ~ "order_or_rate_verification_failed",
+      TRUE ~ "included"),
+    lineup_id = paste(team, game_id, "starting", sep = "_"))
+# A new verification failure must be investigated, not silently converted into a sampling rule.
+stopifnot(all(eligibility_2025$ready_for_classification[eligibility_2025$meets_primary_conditions]))
+flow_flags <- list(
+  "All official 2025 half-innings" = rep(TRUE, nrow(eligibility_2025)),
+  "Innings 1-9" = eligibility_2025$in_confirmed_innings,
+  "Official identities, events, and scores verified" = eligibility_2025$technical_inputs_verified,
+  "Complete half-inning before first roster substitution" = eligibility_2025$complete_before_substitution,
+  "All nine starters have 2024 metrics" = eligibility_2025$all_nine_metrics_available,
+  "All nine starters meet the confirmed prior-season PA threshold" = eligibility_2025$all_nine_meet_pa_threshold,
+  "Observed batting order and metric arithmetic verified" = eligibility_2025$order_cycle_verified & eligibility_2025$all_nine_rates_verified)
+names(flow_flags)[6] <- paste0("All nine starters have at least ", minimum_prior_pa, " PA in ", metric_year)
+keep <- rep(TRUE, nrow(eligibility_2025)); previous_n <- nrow(eligibility_2025)
+sample_flow_2025 <- bind_rows(lapply(names(flow_flags), function(step) {
+  keep <<- keep & coalesce(flow_flags[[step]], FALSE)
+  result <- tibble(step = step, half_innings_remaining = sum(keep), removed_at_step = previous_n - sum(keep),
+    team_games_remaining = n_distinct(paste(eligibility_2025$team[keep], eligibility_2025$game_id[keep])))
+  previous_n <<- sum(keep)
+  result
+}))
+classification_inputs_2025 <- eligibility_2025 %>% filter(ready_for_classification) %>%
+  transmute(minigroup_id, lineup_id, team, season, date = official_date, game_id,
+    inning, inning_half, starting_slot, first_batter_id, n_events, n_completed_pa,
+    inning_runs = official_inning_runs, end_outs, first_play_index, last_play_index,
+    first_substitution_play_index, metric_season = metric_year, minimum_prior_pa = minimum_prior_pa,
+    n_supplemented_events, ready_for_classification, lineup_label = "not_classified") %>%
+  arrange(date, game_id, team, inning)
+selected_lineups <- classification_inputs_2025 %>% distinct(team, game_id, lineup_id)
+lineup_inputs_2025 <- metric_checks %>% inner_join(selected_lineups, by = c("team", "game_id")) %>%
+  transmute(lineup_id, team, season, game_id, slot, batter_id, player = official_name,
+    metric_season, prior_pa = official_pa, prior_ab = official_ab,
+    prior_obp = official_obp, prior_slg = official_slg, prior_ops = official_ops,
+    official_rate_checks_pass, metric_source_url, metric_retrieved_at,
+    game_source_url = paste0("https://statsapi.mlb.com/api/v1.1/game/", game_id, "/feed/live")) %>%
+  arrange(team, game_id, slot)
+team_sample_2025 <- classification_inputs_2025 %>% group_by(team) %>% summarise(
+  half_innings = n(), team_games = n_distinct(game_id), .groups = "drop") %>%
+  complete(team = teams, fill = list(half_innings = 0L, team_games = 0L))
+team_threshold_options_2025 <- bind_rows(lapply(c(50L, 100L, 150L), function(threshold) {
+  passes <- metric_checks %>% group_by(team, game_id) %>% summarise(
+    pass = n() == 9L & all(previous_season_metrics_available & official_pa >= threshold), .groups = "drop")
+  official_minigroups %>% filter(season == analysis_year, inning <= 9,
+    technical_inputs_verified, complete_before_substitution) %>%
+    inner_join(passes %>% filter(pass), by = c("team", "game_id")) %>%
+    count(team, name = "candidate_half_innings") %>%
+    complete(team = teams, fill = list(candidate_half_innings = 0L)) %>%
+    mutate(minimum_previous_season_pa = threshold)
+}))
+empty_sample_teams <- team_sample_2025$team[team_sample_2025$half_innings == 0L]
+# The user confirmed the same 100-PA threshold for every team to retain five-team coverage.
+scope_coverage_confirmed <- TRUE
+decision_register <- bind_rows(decision_register, tibble(
+  decision = "Resulting team coverage after confirmed filters", status = "confirmed",
+  choice = paste0("Retain all five teams using a uniform ", minimum_prior_pa, "-PA threshold")))
+lineup_row_checks <- lineup_inputs_2025 %>% group_by(lineup_id) %>% summarise(
+  complete_nine = n() == 9L & n_distinct(batter_id) == 9L & identical(sort(slot), 1:9), .groups = "drop")
+stopifnot(nrow(classification_inputs_2025) > 0,
+  scope_coverage_confirmed, length(empty_sample_teams) == 0L,
+  setequal(classification_inputs_2025$team, teams),
+  !anyDuplicated(classification_inputs_2025$minigroup_id), all(lineup_row_checks$complete_nine),
+  setequal(classification_inputs_2025$lineup_id, lineup_inputs_2025$lineup_id),
+  all(classification_inputs_2025$season == analysis_year), all(lineup_inputs_2025$metric_season == metric_year),
+  all(lineup_inputs_2025$prior_pa >= minimum_prior_pa),
+  all(classification_inputs_2025$inning <= 9 & classification_inputs_2025$end_outs == 3),
+  all(is.na(classification_inputs_2025$first_substitution_play_index) |
+    classification_inputs_2025$last_play_index < classification_inputs_2025$first_substitution_play_index),
+  all(classification_inputs_2025$lineup_label == "not_classified"),
+  tail(sample_flow_2025$half_innings_remaining, 1) == nrow(classification_inputs_2025))
+preprocessing_readiness <- tibble(
+  requirement = c("User sampling decisions", "2025 games with 2024 predictors", "Actual starting nine and order cycle",
+    "Official half-inning and game scores", "Pre-substitution complete half-innings",
+    paste0("All nine prior-season PA >= ", minimum_prior_pa),
+    "Unique keys and nine-player joins", "All five teams represented", "Classification performed"),
+  status = c(rep("passed_for_selected_sample", 8), "not_started_as_requested"))
+knitr::kable(sample_flow_2025)
+knitr::kable(team_sample_2025)
+knitr::kable(team_threshold_options_2025)
+knitr::kable(preprocessing_readiness)
+```
+
+The prepared sample contains **`r nrow(classification_inputs_2025)` half-innings**, linked to **`r nrow(selected_lineups)` team-games** and **`r n_distinct(classification_inputs_2025$game_id)` distinct games**. The lineup table contains `r nrow(lineup_inputs_2025)` player-slot rows. These are classification inputs, not evidence that either strategy performs better. Filtering on all nine players' previous-season experience restricts the target population to experienced starting lineups.
+
+**Confirmed coverage:** all five teams have eligible half-innings under the uniform `r minimum_prior_pa`-PA rule. Other thresholds above are diagnostic comparisons only. The user selected this rule after reviewing the loss of Angels at 150 PA; no team-specific threshold or missing-value imputation is used. Data preparation and scope confirmation are complete.
+
+Use `processed/classification_inputs_2025.csv` together with `processed/lineup_inputs_2025.csv`, joined by lineup_id. The first table contains half-inning identifiers, observed start slots, and verified runs. The second contains the actual nine-player order and 2024 metrics. The export `processed/classification_ready_2025.rds` packages both tables and the confirmed settings. No Traditional/OPS template, label, statistical comparison, or simulation is produced in this version.
+
+# Data Quality Checks and Exports
+
+Checks guard against join expansion, nonunique keys, loss of records, and use of future-season metrics. Historical source issues remain visible in audit exports. The selected 2025 classification inputs use verified official lineups, 2024 metrics, substitution timing, and scores; they do not depend on the conflicting source-statistics rows.
+
+```{r validation-and-export}
+stopifnot(!anyDuplicated(stats_valid[c("team", "season", "batter_id")]),
+          !anyDuplicated(minigroups$minigroup_id),
+          sum(minigroups$n_events) == nrow(pbp_joined),
+          all(minigroups$lineup_label == "not_classified"),
+          all(!probs$slg_source_usable))
+# Enforce column types, especially for columns with long stretches of missing values across seasons.
+stopifnot(is.numeric(pbp_raw$outs_before), is.numeric(pbp_raw$outs_added),
+          is.character(pbp_raw$bases_before), is.character(pbp_raw$bases_after))
+summary_checks <- tibble(
+  metric = c("stats_nonempty_rows", "stats_validated_rows", "stats_conflicting_rows", "stats_invalid_PA_rows",
+             "probability_rows", "valid_probability_vectors", "probability_source_SLG_disabled",
+             "pbp_rows", "pbp_exact_duplicates", "pbp_conflicting_rows", "pbp_unknown_PA_events",
+             "minigroups", "minigroups_end_below_3", "pbp_records_matched_to_validated_stats"),
+  value = c(nrow(stats), nrow(stats_valid), sum(stats$conflicting_key), sum(stats$invalid_pa),
+            nrow(probs), sum(probs$eligible_probability_vector), sum(!probs$slg_source_usable),
+            nrow(pbp), sum(pbp$exact_duplicate), sum(pbp$conflicting_key), sum(is.na(pbp$completed_pa)),
+            nrow(minigroups), sum(minigroups$end_outs < 3), sum(pbp_joined$has_validated_season_stats)))
+knitr::kable(summary_checks)
+outputs <- list(player_stats_audited = stats, player_stats_validated = stats_valid,
+                player_probabilities_clean = probs, play_by_play_clean = pbp_joined,
+                minigroups_preclassification = minigroups, player_stats_observed = observed_stats,
+                player_metrics_prior_day = pregame_metrics,
+                player_probabilities_observed = probabilities_observed,
+                official_team_stats = official_team_stats, official_previous_seasons = official_previous_seasons,
+                official_starting_lineups = official_starters, official_substitutions = official_substitutions,
+                lineup_inputs_preclassification = lineup_inputs,
+                official_events_complete = official_events_complete,
+                official_minigroups_preclassification = official_minigroups,
+                classification_inputs_2025 = classification_inputs_2025,
+                lineup_inputs_2025 = lineup_inputs_2025)
+for (nm in names(outputs)) write_csv(outputs[[nm]], file.path("processed", paste0(nm, ".csv")))
+saveRDS(outputs, "processed/preprocessed_data.rds")
+classification_bundle <- list(
+  settings = list(analysis_year = analysis_year, metric_year = metric_year, minimum_prior_pa = minimum_prior_pa,
+    include_extra_innings = include_extra_innings, roster = "actual_starting_nine",
+    substitution_policy = "complete_half_innings_before_first_batting_roster_substitution",
+    missing_metric_policy = "no_imputation", scope_coverage_confirmed = scope_coverage_confirmed,
+    classification_status = "not_started"),
+  minigroups = classification_inputs_2025, lineups = lineup_inputs_2025,
+  sample_flow = sample_flow_2025, decisions = decision_register)
+saveRDS(classification_bundle, "processed/classification_ready_2025.rds")
+quality <- list(source_manifest = source_manifest, summary_checks = summary_checks,
+                player_identity_map = identity_map, identity_ambiguities = identity_ambiguities,
+                player_stats_issues = stats_issues, stats_coverage = stats_coverage,
+                probability_issues = probs %>% filter(!eligible_probability_vector | !slg_source_usable),
+                event_dictionary = event_dictionary, state_coverage = state_coverage,
+                pbp_excluded_records = pbp %>% filter(exact_duplicate | conflicting_key | metadata_invalid),
+                pbp_state_issues = pbp_joined %>% filter(state_chain_invalid | invalid_runs |
+                  !bases_before_valid_or_missing | !bases_after_valid_or_missing),
+                join_coverage = join_coverage, unmatched_players = unmatched_players,
+                stats_reconciliation = stats_reconciliation, probability_reconciliation = prob_reconciliation,
+                probability_reconciliation_summary = prob_reconciliation_summary,
+                season_fingerprint_candidates = fingerprint_candidates,
+                game_coverage = game_coverage, preprocessing_readiness = preprocessing_readiness,
+                official_downloads = official_downloads, official_stat_comparison = official_stat_comparison,
+                official_identity_issues = official_identity_issues, resolved_runner_events = resolved_runner_events,
+                game_verification = game_verification, lineup_metric_coverage = lineup_metric_coverage,
+                threshold_impact = threshold_impact, official_missing_halves = official_missing_halves,
+                official_substitute_presence = substitute_presence, date_corrections = date_corrections,
+                official_game_score_audit = official_game_score_audit,
+                season_sample_options = season_sample_options, decision_register = decision_register,
+                local_only_readiness = local_only_readiness, batting_order_audit_2025 = batting_order_audit,
+                eligibility_2025 = eligibility_2025, sample_flow_2025 = sample_flow_2025,
+                team_sample_2025 = team_sample_2025,
+                team_threshold_options_2025 = team_threshold_options_2025,
+                selected_metric_checks_2025 = metric_checks %>% semi_join(selected_lineups, by = c("team", "game_id")))
+for (nm in names(quality)) write_csv(quality[[nm]], file.path("quality", paste0(nm, ".csv")))
+# Verify exported RDS structure and row counts, and confirm that source files remain unchanged.
+saved <- readRDS("processed/preprocessed_data.rds")
+stopifnot(identical(vapply(saved, nrow, integer(1)), vapply(outputs, nrow, integer(1))),
+          identical(unname(tools::md5sum(files)), source_manifest$md5))
+ready_saved <- readRDS("processed/classification_ready_2025.rds")
+stopifnot(identical(ready_saved, classification_bundle))
+```
+
+# Subsequent Analysis: Continue Updating This File
+
+1. Data preparation for the confirmed five-team 2025 sample is complete. Stop before classification, as requested.
+2. Before assigning labels, confirm any unresolved judgment calls about tied metrics or exact versus approximate matching. Do not tune classification rules using inning runs.
+3. Follow page 2 of the revised scope to construct the Traditional order: highest OBP, next-highest OBP, highest remaining OPS, highest remaining SLG, and highest remaining OPS. Sort the remaining four hitters by OPS. The OPS strategy reorders only the same first five hitters and leaves the last four unchanged.
+4. Preserve both/neither/unknown cases rather than forcing every observation into one of two strategies. Report classification coverage before comparing outcomes.
+5. Account for within-game dependence when comparing runs per half-inning by clustering on game_id. Interpret observational comparisons separately from simulations that reorder the same roster.
+
+The selected inputs pass the data checks and retain all five teams under the confirmed scope. Classification has not started. No claim about strategy performance or causal effects has been made.
+
+# Exploratory Estimate of Classification Coverage
+
+This user-requested feasibility calculation does not assign or export formal labels. It uses only player IDs, batting slots, 2024 metrics, and the number of eligible half-innings attached to each lineup. Runs are not used. The strict scenario requires the observed nine-player order to match the scope exactly. All orders permitted by ties in the published metrics are accepted for this diagnostic; this is not a confirmed tie-breaking policy. A separate top-five-only scenario is shown to quantify the effect of relaxing the last-four requirement, not to adopt that relaxation.
+
+```{r classification-feasibility-estimate}
+estimate_lineup <- function(d) {
+  d <- d[order(d$slot), ]
+  orders <- function(indices, criteria) {
+    if (!length(indices)) return(list(integer()))
+    values <- d[[criteria[1]]][indices]
+    choices <- indices[values == max(values)]
+    unlist(lapply(choices, function(j) lapply(orders(setdiff(indices, j), criteria[-1]),
+                                            function(rest) c(j, rest))), recursive = FALSE)
+  }
+  a <- orders(1:9, c("prior_obp", "prior_obp", "prior_ops", "prior_slg", rep("prior_ops", 5)))
+  b <- unlist(lapply(a, function(v) lapply(orders(v[1:5], rep("prior_ops", 5)),
+                                          function(top) c(top, v[6:9]))), recursive = FALSE)
+  encode <- function(v) paste(d$batter_id[v], collapse = ",")
+  a_codes <- unique(vapply(a, encode, character(1)))
+  b_codes <- unique(vapply(b, encode, character(1)))
+  tibble(lineup_id = d$lineup_id[1], team = d$team[1],
+    roster_key = paste(sort(d$batter_id), collapse = ","), observed_order_key = encode(1:9),
+    a_exact = encode(1:9) %in% a_codes, b_exact = encode(1:9) %in% b_codes,
+    a_top5 = any(vapply(a, function(v) identical(v[1:5], 1:5), logical(1))),
+    b_top5 = any(vapply(b, function(v) identical(v[1:5], 1:5), logical(1))),
+    a_variants = length(a_codes), b_variants = length(b_codes),
+    templates_overlap = length(intersect(a_codes, b_codes)) > 0L)
+}
+feasibility_checks <- bind_rows(lapply(split(lineup_inputs_2025, lineup_inputs_2025$lineup_id), estimate_lineup))
+# Independent sequential validation of the Traditional exact-match test.
+direct_a_check <- vapply(split(lineup_inputs_2025, lineup_inputs_2025$lineup_id), function(d) {
+  d <- d[order(d$slot), ]
+  criteria <- c("prior_obp", "prior_obp", "prior_ops", "prior_slg", rep("prior_ops", 5))
+  all(vapply(1:9, function(j) d[[criteria[j]]][j] == max(d[[criteria[j]]][j:9]), logical(1)))
+}, logical(1))
+stopifnot(identical(unname(direct_a_check), feasibility_checks$a_exact))
+feasibility_counts <- bind_rows(lapply(c("exact", "top5"), function(scenario) {
+  a <- feasibility_checks[[paste0("a_", scenario)]]
+  b <- feasibility_checks[[paste0("b_", scenario)]]
+  diagnostic_group <- ifelse(a & b, "Both", ifelse(a, "Traditional only", ifelse(b, "OPS only", "Neither")))
+  checks <- feasibility_checks %>% transmute(lineup_id, diagnostic_group)
+  game_counts <- checks %>% count(diagnostic_group, name = "team_games")
+  half_counts <- classification_inputs_2025 %>% select(lineup_id) %>%
+    left_join(checks, by = "lineup_id") %>% count(diagnostic_group, name = "half_innings")
+  full_join(game_counts, half_counts, by = "diagnostic_group") %>%
+    complete(diagnostic_group = c("Traditional only", "OPS only", "Both", "Neither"),
+             fill = list(team_games = 0L, half_innings = 0L)) %>% mutate(scenario = scenario)
+}))
+combination_inventory <- tibble(
+  quantity = c("Eligible half-innings", "Team-game lineups", "Distinct nine-player rosters",
+               "Distinct observed nine-player orders", "Team-games with tie-dependent templates",
+               "Team-games whose A and B templates overlap"),
+  count = c(nrow(classification_inputs_2025), nrow(feasibility_checks),
+    n_distinct(feasibility_checks$roster_key), n_distinct(feasibility_checks$observed_order_key),
+    sum(feasibility_checks$a_variants > 1 | feasibility_checks$b_variants > 1),
+    sum(feasibility_checks$templates_overlap)))
+stopifnot(all(feasibility_counts %>% group_by(scenario) %>% summarise(n = sum(half_innings)) %>%
+                pull(n) == nrow(classification_inputs_2025)),
+          all(classification_inputs_2025$lineup_label == "not_classified"))
+knitr::kable(combination_inventory)
+knitr::kable(feasibility_counts %>% select(scenario, diagnostic_group, team_games, half_innings))
+```
+
+For a fixed roster and a fixed choice of the top five, there are 5! = 120 possible top-five permutations when slots 6-9 remain fixed. That combinatorial count is different from the two strategies in the scope and from the number of actual observed lineups. Strict and top-five-only counts above are conditional feasibility results, not final classifications or evidence of strategy effectiveness.
+
+An empty Traditional group prevents the proposed two-group comparison under these matching assumptions. Accepting all tied-metric permutations already gives exact matching its most permissive interpretation for the published rates. A similarity-based definition would change the classification question and requires user confirmation; it is not implemented here. Template overlap also means that A and B need not be distinct for every roster.
+
+# Session Information
+
+```{r session-info}
+sessionInfo()
+```

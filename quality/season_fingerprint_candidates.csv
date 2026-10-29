@@ -1,0 +1,6 @@
+"source_row","team","source_season","player","player_key","ab","h","doubles","triples","hr","bb","so","candidate_season","batter_id","season_agrees","disposition"
+10,"Dodgers",2026,"Will Smith","willsmith",235,61,9,0,10,34,45,2026,"669257",TRUE,"supporting_evidence_only_source_confirmation_required"
+12,"Dodgers",2026,"Alex Freeland","alexfreeland",231,54,9,0,4,32,74,2026,"690976",TRUE,"supporting_evidence_only_source_confirmation_required"
+78,"Cubs",2025,"Justin Turner","justinturner",169,37,7,0,3,17,37,2025,"457759",TRUE,"supporting_evidence_only_source_confirmation_required"
+188,"Cardinals",2023,"Andrew Knizner","andrewknizner",224,54,11,0,10,12,62,2023,"668800",TRUE,"supporting_evidence_only_source_confirmation_required"
+189,"Cardinals",2023,"Tyler O'Neill","tyleroneill",238,55,14,0,9,28,67,2023,"641933",TRUE,"supporting_evidence_only_source_confirmation_required"

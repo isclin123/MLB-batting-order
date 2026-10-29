@@ -1,0 +1,7 @@
+"requirement","status"
+"Typed import and lossless joins","implemented_and_checked"
+"Observed event count reconciliation","implemented_differences_retained"
+"Prior-day metrics without same-day outcomes","implemented_with_coverage_limits"
+"Complete source season statistics","unresolved_source_conflicts_and_gaps"
+"Official game-score reconciliation","requires_external_verification"
+"Starting order and substitutions","not_yet_reconstructed"

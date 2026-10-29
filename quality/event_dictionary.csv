@@ -1,0 +1,60 @@
+"event_source","event","completed_pa","records"
+"Bunt Groundout","field_out",TRUE,25
+"Bunt Lineout","field_out",TRUE,1
+"Bunt Pop Out","field_out",TRUE,15
+"Catcher Interference","catcher_interf",TRUE,10
+"Double","double",TRUE,1256
+"Double Play","double_play",TRUE,55
+"Field Error","field_error",TRUE,181
+"Fielders Choice","fielders_choice",TRUE,60
+"Fielders Choice Out","fielders_choice_out",TRUE,37
+"Flyout","field_out",TRUE,4056
+"Forceout","force_out",TRUE,580
+"Grounded Into DP","grounded_into_double_play",TRUE,556
+"Groundout","field_out",TRUE,4971
+"Hit By Pitch","hit_by_pitch",TRUE,399
+"Home Run","home_run",TRUE,917
+"Intent Walk","intent_walk",TRUE,76
+"Lineout","field_out",TRUE,1737
+"Pop Out","field_out",TRUE,1421
+"Runner Out","runner_out",FALSE,2
+"Sac Bunt","sac_bunt",TRUE,104
+"Sac Fly","sac_fly",TRUE,215
+"Sac Fly Double Play","sac_fly_double_play",TRUE,2
+"Single","single",TRUE,4360
+"Strikeout","strikeout",TRUE,6724
+"Strikeout Double Play","strikeout_double_play",TRUE,15
+"Triple","triple",TRUE,100
+"Walk","walk",TRUE,2638
+"catcher_interf","catcher_interf",TRUE,57
+"caught_stealing_2b","caught_stealing_2b",FALSE,116
+"caught_stealing_3b","caught_stealing_3b",FALSE,9
+"caught_stealing_home","caught_stealing_home",FALSE,13
+"double","double",TRUE,3842
+"double_play","double_play",TRUE,182
+"field_error","field_error",TRUE,504
+"field_out","field_out",TRUE,36262
+"fielders_choice","fielders_choice",TRUE,192
+"fielders_choice_out","fielders_choice_out",TRUE,135
+"force_out","force_out",TRUE,1674
+"grounded_into_double_play","grounded_into_double_play",TRUE,1537
+"hit_by_pitch","hit_by_pitch",TRUE,1046
+"home_run","home_run",TRUE,2955
+"intent_walk","intent_walk",TRUE,218
+"other_out","other_out",FALSE,8
+"pickoff_1b","pickoff_1b",FALSE,20
+"pickoff_2b","pickoff_2b",FALSE,4
+"pickoff_3b","pickoff_3b",FALSE,1
+"pickoff_caught_stealing_2b","pickoff_caught_stealing_2b",FALSE,31
+"pickoff_caught_stealing_3b","pickoff_caught_stealing_3b",FALSE,2
+"sac_bunt","sac_bunt",TRUE,181
+"sac_fly","sac_fly",TRUE,660
+"sac_fly_double_play","sac_fly_double_play",TRUE,10
+"single","single",TRUE,12657
+"stolen_base_2b","stolen_base_2b",FALSE,2
+"strikeout","strikeout",TRUE,20665
+"strikeout_double_play","strikeout_double_play",TRUE,50
+"triple","triple",TRUE,321
+"triple_play","triple_play",TRUE,2
+"walk","walk",TRUE,7717
+"wild_pitch","wild_pitch",FALSE,2

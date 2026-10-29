@@ -1,0 +1,15 @@
+# OS and editor files
+.DS_Store
+.~*
+~$*
+
+# R session files
+.Rhistory
+.RData
+.Rproj.user/
+
+# Cached MLB Stats API responses; the Rmd re-downloads them on Knit
+source_cache/
+
+# Exceeds GitHub's 100 MB file limit; regenerated on Knit
+processed/play_by_play_clean.csv
