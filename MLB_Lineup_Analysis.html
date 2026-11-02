@@ -11,7 +11,7 @@
 
 <meta name="author" content="Math 534 Project" />
 
-<meta name="date" content="2026-10-31" />
+<meta name="date" content="2026-11-02" />
 
 <title>MLB 2025 Batting Lineup Analysis</title>
 
@@ -254,3295 +254,335 @@ div.tocify {
 
 <h1 class="title toc-ignore">MLB 2025 Batting Lineup Analysis</h1>
 <h4 class="author">Math 534 Project</h4>
-<h4 class="date">2026-10-31</h4>
+<h4 class="date">2026-11-02</h4>
 
 </div>
 
 
-<div id="project-entry-point-and-current-scope" class="section level1" number="1">
-<h1 number="1"><span class="header-section-number">1</span> Project Entry Point and Current Scope</h1>
-<p>This Rmd is the single analysis file for the project. All prose, comments, and messages stay in English.</p>
-<p><strong>Key finding:</strong> under the scope’s exact rules, no 2025 lineup is Traditional and only one game is OPS-ranked, so the planned two-group t-test cannot be run. See the section <em>Classification Under the Scope’s Rules</em> near the end.</p>
+<div id="overview" class="section level1" number="1">
+<h1 number="1"><span class="header-section-number">1</span> Overview</h1>
+<p><strong>Key finding:</strong> under the scope’s exact rules, no 2025 lineup is Traditional and only one game is OPS-ranked, so the planned two-group t-test cannot be run.</p>
 <ul>
-<li>Sample: 2025 games with 2024 player metrics; all nine starters have at least 100 PA in 2024; innings 1-9; complete half-innings before the first substitution. Missing metrics are not imputed.</li>
-<li>The original Excel files are never modified. Each Knit writes derived data to <code>processed/</code> and checks to <code>quality/</code>.</li>
-<li>To reproduce, click <strong>Knit</strong> in RStudio or run <code>rmarkdown::render(&quot;MLB_Lineup_Analysis.Rmd&quot;)</code> in this folder.</li>
+<li>Unit: one team’s half-inning in 2025; each starter is described by 2024 OBP, SLG, and OPS.</li>
+<li>Sample: innings 1-9, complete half-innings before the first substitution, all nine starters with at least 100 PA in 2024.</li>
+<li>Data: the supplied play-by-play workbook plus the MLB Stats API. The supplied player-statistics and probability workbooks are not used.</li>
+<li>To reproduce, Knit in RStudio or run <code>rmarkdown::render(&quot;MLB_Lineup_Analysis.Rmd&quot;)</code>.</li>
 </ul>
-<pre class="r"><code>required &lt;- c(&quot;readxl&quot;, &quot;dplyr&quot;, &quot;tidyr&quot;, &quot;stringi&quot;, &quot;jsonlite&quot;, &quot;knitr&quot;, &quot;rmarkdown&quot;)
-missing_packages &lt;- required[!vapply(required, requireNamespace, logical(1), quietly = TRUE)]
-if (length(missing_packages)) stop(&quot;Install the following packages first: &quot;, paste(missing_packages, collapse = &quot;, &quot;))
-library(dplyr)
+<pre class="r"><code>library(dplyr)
 library(tidyr)
-knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = TRUE)
-# Knit uses the directory containing this Rmd, without machine-specific absolute paths.
-dir.create(&quot;processed&quot;, showWarnings = FALSE)
-dir.create(&quot;quality&quot;, showWarnings = FALSE)
-files &lt;- c(stats = &quot;Math 534 Baseball Project-2.xlsx&quot;,
-           probabilities = &quot;MLB_2023_2026_5Teams_Player_Probabilities.xlsx&quot;,
-           pbp = &quot;MLB_2023_2026_5Teams_PlayByPlay.xlsx&quot;)
-stopifnot(all(file.exists(files)))
-teams &lt;- c(&quot;Dodgers&quot;, &quot;Cubs&quot;, &quot;Cardinals&quot;, &quot;Angels&quot;, &quot;Giants&quot;)
-clean_names &lt;- function(x) {
-  x &lt;- tolower(gsub(&quot;[^A-Za-z0-9]+&quot;, &quot;_&quot;, x))
-  gsub(&quot;^_|_$&quot;, &quot;&quot;, x)
-}
-name_key &lt;- function(x) {
-  # Generate candidate identity keys; verify uniqueness separately without automatic fuzzy matching.
-  tolower(gsub(&quot;[^A-Za-z0-9]&quot;, &quot;&quot;, stringi::stri_trans_general(x, &quot;Latin-ASCII&quot;)))
-}
-normalize_id &lt;- function(x) {
-  # Excel stores some integer IDs as strings ending in .0; never round arbitrary IDs.
-  x &lt;- trimws(as.character(x))
-  sub(&quot;^([0-9]+)\\.0+$&quot;, &quot;\\1&quot;, x)
-}
-read_source &lt;- function(path) {
-  # State columns are empty for the first three seasons, so default guessing can infer logical types.
-  # Explicit types prevent two outs from becoming TRUE and base-state text from becoming NA.
-  types &lt;- switch(path,
-    &quot;Math 534 Baseball Project-2.xlsx&quot; = c(&quot;text&quot;, &quot;numeric&quot;, &quot;text&quot;, rep(&quot;numeric&quot;, 18)),
-    &quot;MLB_2023_2026_5Teams_Player_Probabilities.xlsx&quot; = c(&quot;text&quot;, &quot;numeric&quot;, &quot;text&quot;, &quot;text&quot;, rep(&quot;numeric&quot;, 10)),
-    &quot;MLB_2023_2026_5Teams_PlayByPlay.xlsx&quot; = c(&quot;text&quot;, &quot;numeric&quot;, &quot;date&quot;, &quot;text&quot;, &quot;numeric&quot;, &quot;text&quot;,
-      &quot;numeric&quot;, &quot;text&quot;, &quot;text&quot;, &quot;text&quot;, &quot;numeric&quot;, &quot;numeric&quot;, &quot;text&quot;, &quot;numeric&quot;, &quot;text&quot;, &quot;text&quot;, &quot;numeric&quot;))
-  x &lt;- readxl::read_excel(path, col_types = types, .name_repair = &quot;minimal&quot;)
-  names(x) &lt;- clean_names(names(x))
-  x$source_row &lt;- seq_len(nrow(x)) + 1L
-  fields &lt;- setdiff(names(x), &quot;source_row&quot;)
-  empty &lt;- rowSums(!is.na(x[fields])) == 0
-  attr(x, &quot;blank_rows&quot;) &lt;- sum(empty)
-  x &lt;- x[!empty, ]
-  x &lt;- x %&gt;% mutate(across(where(is.character), ~na_if(trimws(.x), &quot;&quot;)))
-  x
-}
-write_csv &lt;- function(x, path) {
-  write.csv(as.data.frame(x), path, row.names = FALSE, na = &quot;&quot;, fileEncoding = &quot;UTF-8&quot;)
-}
-stats_raw &lt;- read_source(files[[&quot;stats&quot;]])
-prob_raw &lt;- read_source(files[[&quot;probabilities&quot;]])
-pbp_raw &lt;- read_source(files[[&quot;pbp&quot;]])
-source_manifest &lt;- tibble(source = names(files), file = unname(files),
-                         md5 = unname(tools::md5sum(files)),
-                         nonempty_rows = c(nrow(stats_raw), nrow(prob_raw), nrow(pbp_raw)))
-knitr::kable(source_manifest)</code></pre>
-<table>
-<colgroup>
-<col width="12%" />
-<col width="43%" />
-<col width="30%" />
-<col width="12%" />
-</colgroup>
-<thead>
-<tr class="header">
-<th align="left">source</th>
-<th align="left">file</th>
-<th align="left">md5</th>
-<th align="right">nonempty_rows</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="left">stats</td>
-<td align="left">Math 534 Baseball Project-2.xlsx</td>
-<td align="left">447c2461f372b688f1ba77a3a85f45e8</td>
-<td align="right">212</td>
-</tr>
-<tr class="even">
-<td align="left">probabilities</td>
-<td align="left">MLB_2023_2026_5Teams_Player_Probabilities.xlsx</td>
-<td align="left">ec3482861f98669763477b244540a63d</td>
-<td align="right">511</td>
-</tr>
-<tr class="odd">
-<td align="left">pbp</td>
-<td align="left">MLB_2023_2026_5Teams_PlayByPlay.xlsx</td>
-<td align="left">a78a9b7fe728297f417a8d3de30ef89b</td>
-<td align="right">121588</td>
-</tr>
-</tbody>
-</table>
+knitr::opts_chunk$set(message = FALSE)
+for (d in c(&quot;source_cache/mlb_games&quot;, &quot;source_cache/mlb_seasons&quot;, &quot;processed&quot;, &quot;quality&quot;)) {
+  dir.create(d, recursive = TRUE, showWarnings = FALSE)
+}</code></pre>
 </div>
-<div id="confirmed-decisions-and-official-source-supplement" class="section level1" number="2">
-<h1 number="2"><span class="header-section-number">2</span> Confirmed Decisions and Official Source Supplement</h1>
-<p>The user confirmed actual nine-player game lineups, verified MLB supplementation, previous complete-season official metrics, and complete half-innings before the first batting-roster substitution. On 2026-10-29, the user confirmed 2025 outcomes, 2024 metrics, and innings 1-9 only. After reviewing team coverage, the user revised the prior-season threshold from 150 to 100 PA for every starter on every team, retaining all five teams. Fixed rosters are reserved for simulation. No lineup labels are assigned here.</p>
-<p>Official responses are cached locally so subsequent rendering does not repeatedly download games. The cache preserves the source URL and retrieval timestamp. Failed requests remain explicit failures. Official values are used only after the game ID, date, team, and batting half agree with the supplied record. These are independently retrieved records, although the original workbook may itself originate from the same MLB provider.</p>
-<pre class="r"><code>dir.create(&quot;source_cache&quot;, showWarnings = FALSE)
-dir.create(&quot;source_cache/mlb_games&quot;, showWarnings = FALSE)
-scalar &lt;- function(x, default = NA_character_) if (is.null(x) || !length(x)) default else as.character(x[[1]])
-num &lt;- function(x) suppressWarnings(as.numeric(scalar(x)))
-cache_json &lt;- function(url, path) {
-  if (file.exists(path)) {
-    old &lt;- tryCatch(readRDS(path), error = function(e) NULL)
-    if (!is.null(old) &amp;&amp; identical(old$url, url) &amp;&amp; !is.null(old$data)) return(old)
-  }
-  answer &lt;- tryCatch({
-    old_timeout &lt;- getOption(&quot;timeout&quot;); options(timeout = 30)
-    on.exit(options(timeout = old_timeout), add = TRUE)
-    data &lt;- jsonlite::fromJSON(url, simplifyVector = FALSE)
-    if (!is.null(data$messageNumber)) stop(scalar(data$message))
-    list(url = url, retrieved_at_utc = format(Sys.time(), tz = &quot;UTC&quot;, usetz = TRUE), data = data, error = NA_character_)
-  }, error = function(e) list(url = url, retrieved_at_utc = format(Sys.time(), tz = &quot;UTC&quot;, usetz = TRUE),
-                             data = NULL, error = conditionMessage(e)))
-  if (!is.null(answer$data)) {
-    tmp &lt;- paste0(path, &quot;.tmp&quot;); saveRDS(answer, tmp); file.rename(tmp, path)
-  }
-  answer
+<div id="data" class="section level1" number="2">
+<h1 number="2"><span class="header-section-number">2</span> Data</h1>
+<div id="play-by-play-workbook" class="section level2" number="2.1">
+<h2 number="2.1"><span class="header-section-number">2.1</span> Play-by-Play Workbook</h2>
+<pre class="r"><code># Column types are set by hand; otherwise the empty state columns are read as logical.
+types &lt;- c(&quot;text&quot;, &quot;numeric&quot;, &quot;date&quot;, &quot;text&quot;, &quot;numeric&quot;, &quot;text&quot;, &quot;numeric&quot;, &quot;text&quot;, &quot;text&quot;, &quot;text&quot;,
+           &quot;numeric&quot;, &quot;numeric&quot;, &quot;text&quot;, &quot;numeric&quot;, &quot;text&quot;, &quot;text&quot;, &quot;numeric&quot;)
+pbp &lt;- readxl::read_excel(&quot;MLB_2023_2026_5Teams_PlayByPlay.xlsx&quot;, col_types = types) %&gt;%
+  filter(season == 2025) %&gt;%
+  mutate(game_id = sub(&quot;\\.0+$&quot;, &quot;&quot;, game_id), batter_id = sub(&quot;\\.0+$&quot;, &quot;&quot;, batter_id))
+c(plays = nrow(pbp), games = n_distinct(pbp$game_id))</code></pre>
+<pre><code>## plays games 
+## 30175   744</code></pre>
+</div>
+<div id="mlb-stats-api" class="section level2" number="2.2">
+<h2 number="2.2"><span class="header-section-number">2.2</span> MLB Stats API</h2>
+<p>For each 2025 game: starting lineups, substitutions, play results, and the line score. Each file is downloaded once and then read from <code>source_cache/</code>.</p>
+<pre class="r"><code># Download a JSON file once; later runs read the saved copy.
+get_json &lt;- function(url, file) {
+  if (!file.exists(file)) saveRDS(list(url = url, data = jsonlite::fromJSON(url, simplifyVector = FALSE)), file)
+  readRDS(file)$data
 }
-team_ids &lt;- c(Dodgers = &quot;119&quot;, Cubs = &quot;112&quot;, Cardinals = &quot;138&quot;, Angels = &quot;108&quot;, Giants = &quot;137&quot;)
+val &lt;- function(x) if (is.null(x)) NA else x  # missing JSON field becomes NA
+
+team_ids &lt;- c(Dodgers = 119, Cubs = 112, Cardinals = 138, Angels = 108, Giants = 137)
 feed_fields &lt;- paste(c(&quot;gamePk&quot;, &quot;gameData&quot;, &quot;datetime&quot;, &quot;officialDate&quot;, &quot;status&quot;, &quot;abstractGameState&quot;,
   &quot;teams&quot;, &quot;id&quot;, &quot;name&quot;, &quot;liveData&quot;, &quot;boxscore&quot;, &quot;players&quot;, &quot;person&quot;, &quot;fullName&quot;, &quot;battingOrder&quot;,
   &quot;stats&quot;, &quot;batting&quot;, &quot;linescore&quot;, &quot;innings&quot;, &quot;num&quot;, &quot;home&quot;, &quot;away&quot;, &quot;runs&quot;, &quot;plays&quot;, &quot;allPlays&quot;,
   &quot;atBatIndex&quot;, &quot;about&quot;, &quot;inning&quot;, &quot;halfInning&quot;, &quot;isComplete&quot;, &quot;matchup&quot;, &quot;batter&quot;, &quot;result&quot;, &quot;event&quot;,
   &quot;eventType&quot;, &quot;awayScore&quot;, &quot;homeScore&quot;, &quot;count&quot;, &quot;outs&quot;, &quot;playEvents&quot;, &quot;isSubstitution&quot;, &quot;details&quot;,
   &quot;player&quot;, &quot;position&quot;, &quot;code&quot;, &quot;runners&quot;, &quot;movement&quot;, &quot;start&quot;, &quot;end&quot;, &quot;isOut&quot;, &quot;runner&quot;), collapse = &quot;,&quot;)
-game_ids &lt;- sort(unique(normalize_id(pbp_raw$game_id)))
-fetch_game &lt;- function(g) {
-  u &lt;- paste0(&quot;https://statsapi.mlb.com/api/v1.1/game/&quot;, g, &quot;/feed/live?fields=&quot;, feed_fields)
-  a &lt;- cache_json(u, file.path(&quot;source_cache/mlb_games&quot;, paste0(g, &quot;.rds&quot;)))
-  tibble(game_id = g, url = u, retrieved_at_utc = a$retrieved_at_utc,
-         download_ok = !is.null(a$data), error = a$error)
-}
-# Socket workers avoid macOS network-library failures after fork. Each game has its own cache file.
-workers &lt;- 4L
-cluster &lt;- parallel::makePSOCKcluster(workers)
-official_downloads &lt;- tryCatch({
-  parallel::clusterCall(cluster, setwd, getwd())
-  parallel::clusterEvalQ(cluster, suppressPackageStartupMessages(library(dplyr)))
-  parallel::clusterExport(cluster, c(&quot;scalar&quot;, &quot;cache_json&quot;, &quot;fetch_game&quot;, &quot;feed_fields&quot;), envir = environment())
-  bind_rows(parallel::parLapply(cluster, game_ids, fetch_game))
-}, finally = parallel::stopCluster(cluster))
-knitr::kable(count(official_downloads, download_ok))</code></pre>
-<table>
-<thead>
-<tr class="header">
-<th align="left">download_ok</th>
-<th align="right">n</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="left">TRUE</td>
-<td align="right">2978</td>
-</tr>
-</tbody>
-</table>
-<pre class="r"><code>parse_game &lt;- function(g) {
-  path &lt;- file.path(&quot;source_cache/mlb_games&quot;, paste0(g, &quot;.rds&quot;))
-  if (!file.exists(path)) return(NULL)
-  saved_game &lt;- readRDS(path); z &lt;- saved_game$data
-  if (scalar(z$gamePk) != g) stop(&quot;Cached game identity mismatch: &quot;, g)
-  date &lt;- as.Date(scalar(z$gameData$datetime$officialDate))
-  meta &lt;- starts &lt;- batters &lt;- halves &lt;- plays &lt;- changes &lt;- list()
+
+read_game &lt;- function(g) {
+  url &lt;- paste0(&quot;https://statsapi.mlb.com/api/v1.1/game/&quot;, g, &quot;/feed/live?fields=&quot;, feed_fields)
+  z &lt;- get_json(url, paste0(&quot;source_cache/mlb_games/&quot;, g, &quot;.rds&quot;))
+  team_of &lt;- c(away = names(team_ids)[match(z$gameData$teams$away$id, team_ids)],
+               home = names(team_ids)[match(z$gameData$teams$home$id, team_ids)])
+  games &lt;- roster &lt;- scores &lt;- plays &lt;- subs &lt;- list()
+
+  # Game date, batting orders, and line score for each of our five teams in this game.
   for (side in c(&quot;away&quot;, &quot;home&quot;)) {
-    tid &lt;- scalar(z$gameData$teams[[side]]$id)
-    team &lt;- names(team_ids)[match(tid, team_ids)]
+    team &lt;- team_of[[side]]
     if (is.na(team)) next
     half &lt;- if (side == &quot;away&quot;) &quot;top&quot; else &quot;bottom&quot;
-    meta[[side]] &lt;- tibble(team = team, game_id = g, official_date = date, official_half = half,
-      official_state = scalar(z$gameData$status$abstractGameState),
-      official_game_runs = num(z$liveData$linescore$teams[[side]]$runs))
-    players &lt;- z$liveData$boxscore$teams[[side]]$players
-    b &lt;- bind_rows(lapply(players, function(p) {
-      order &lt;- num(p$battingOrder)
-      if (is.na(order)) return(NULL)
-      tibble(team = team, game_id = g, batter_id = scalar(p$person$id),
-        official_name = scalar(p$person$fullName), order_code = as.integer(order),
-        slot = as.integer(order %/% 100), entry_sequence = as.integer(order %% 100))
-    }))
-    batters[[side]] &lt;- b
-    starts[[side]] &lt;- b %&gt;% filter(entry_sequence == 0L)
-    halves[[side]] &lt;- bind_rows(lapply(z$liveData$linescore$innings, function(i) {
-      r &lt;- num(i[[side]]$runs)
-      # Missing runs for a home ninth that was never played is not a zero-run half-inning.
-      if (is.na(r)) return(NULL)
-      tibble(team = team, game_id = g, inning = as.integer(num(i$num)), inning_half = half, official_inning_runs = r)
-    }))
+    games[[side]] &lt;- list(team = team, game_id = g, date = z$gameData$datetime$officialDate,
+                          state = z$gameData$status$abstractGameState)
+    for (p in z$liveData$boxscore$teams[[side]]$players) {
+      if (is.null(p$battingOrder)) next
+      order &lt;- as.numeric(p$battingOrder)  # 300 = starter in slot 3, 301 = first substitute in slot 3
+      roster[[length(roster) + 1]] &lt;- list(team = team, game_id = g, batter_id = as.character(p$person$id),
+                                           player = p$person$fullName, slot = order %/% 100, entry = order %% 100)
+    }
+    for (i in z$liveData$linescore$innings) {
+      if (is.null(i[[side]]$runs)) next  # half-inning not played
+      scores[[length(scores) + 1]] &lt;- list(team = team, game_id = g, inning = i$num, inning_half = half,
+                                           line_score_runs = i[[side]]$runs)
+    }
   }
-  all_batters &lt;- bind_rows(batters)
+  roster &lt;- bind_rows(roster)
+
+  # Play results and substitutions.
   for (p in z$liveData$plays$allPlays) {
-    half &lt;- scalar(p$about$halfInning); side &lt;- if (half == &quot;top&quot;) &quot;away&quot; else &quot;home&quot;
-    tid &lt;- scalar(z$gameData$teams[[side]]$id); team &lt;- names(team_ids)[match(tid, team_ids)]
-    index &lt;- as.integer(num(p$atBatIndex)); inning &lt;- as.integer(num(p$about$inning))
-    if (!is.na(team)) {
-      rr &lt;- p$runners
-      runner_out_only &lt;- length(rr) &gt; 0 &amp;&amp; all(vapply(rr, function(r) {
-        !is.null(r$movement$start) &amp;&amp; isTRUE(r$movement$isOut) &amp;&amp;
-          scalar(r$details$runner$id) != scalar(p$matchup$batter$id)
-      }, logical(1)))
-      plays[[length(plays) + 1L]] &lt;- tibble(team = team, game_id = g, play_index = index, inning = inning,
-        inning_half = half, official_batter_id = scalar(p$matchup$batter$id),
-        official_event = scalar(p$result$eventType), official_outs_after = num(p$count$outs),
-        official_score_after = num(p$result[[paste0(side, &quot;Score&quot;)]]),
-        official_runner_out_only = runner_out_only)
+    half &lt;- p$about$halfInning
+    side &lt;- if (half == &quot;top&quot;) &quot;away&quot; else &quot;home&quot;
+    if (!is.na(team_of[[side]])) {
+      batter &lt;- p$matchup$batter$id
+      runner_out_only &lt;- length(p$runners) &gt; 0 &amp;&amp; all(sapply(p$runners, function(r)
+        !is.null(r$movement$start) &amp;&amp; isTRUE(r$movement$isOut) &amp;&amp; r$details$runner$id != batter))
+      plays[[length(plays) + 1]] &lt;- list(team = team_of[[side]], game_id = g, play_index = p$atBatIndex,
+        inning = p$about$inning, inning_half = half, batter_id = as.character(batter),
+        event = val(p$result$eventType), outs_after = val(p$count$outs),
+        score_after = val(p$result[[paste0(side, &quot;Score&quot;)]]), runner_out_only = runner_out_only)
     }
     for (e in p$playEvents) {
       if (!isTRUE(e$isSubstitution)) next
-      id &lt;- scalar(e$player$id)
-      # Only substitutions involving a player with an actual batting-order code affect the batting roster.
-      candidates &lt;- all_batters %&gt;% filter(batter_id == id, entry_sequence &gt; 0L)
-      if (!nrow(candidates)) next
-      for (j in seq_len(nrow(candidates))) changes[[length(changes) + 1L]] &lt;- tibble(
-        team = candidates$team[j], game_id = g, substitute_id = id, slot = candidates$slot[j],
-        substitution_play_index = index, substitution_inning = inning, substitution_half = half,
-        substitution_type = scalar(e$details$eventType))
+      for (j in which(roster$batter_id == as.character(val(e$player$id)) &amp; roster$entry &gt; 0)) {
+        subs[[length(subs) + 1]] &lt;- list(team = roster$team[j], game_id = g, batter_id = roster$batter_id[j],
+                                         play_index = p$atBatIndex)
+      }
     }
   }
-  list(meta = bind_rows(meta), starters = bind_rows(starts), batting_roster = all_batters,
-       half_scores = bind_rows(halves), plays = bind_rows(plays), substitutions = bind_rows(changes))
+  list(games = bind_rows(games), roster = roster, scores = bind_rows(scores),
+       plays = bind_rows(plays), subs = bind_rows(subs))
 }
-parsed_cache_path &lt;- &quot;source_cache/parsed_games.rds&quot;
-parse_signature &lt;- paste(deparse(body(parse_game)), collapse = &quot;\n&quot;)
-game_hashes &lt;- tools::md5sum(file.path(&quot;source_cache/mlb_games&quot;,
-  paste0(official_downloads$game_id[official_downloads$download_ok], &quot;.rds&quot;)))
-old_parsed &lt;- if (file.exists(parsed_cache_path)) readRDS(parsed_cache_path) else NULL
-if (!is.null(old_parsed) &amp;&amp; identical(old_parsed$signature, parse_signature) &amp;&amp; identical(old_parsed$hashes, game_hashes)) {
-  parsed &lt;- old_parsed$data
-} else {
-  cluster &lt;- parallel::makePSOCKcluster(4L)
-  parsed &lt;- tryCatch({
-    parallel::clusterCall(cluster, setwd, getwd())
-    parallel::clusterEvalQ(cluster, suppressPackageStartupMessages(library(dplyr)))
-    parallel::clusterExport(cluster, c(&quot;parse_game&quot;, &quot;scalar&quot;, &quot;num&quot;, &quot;team_ids&quot;), envir = environment())
-    parallel::parLapply(cluster, official_downloads$game_id[official_downloads$download_ok], parse_game)
-  }, finally = parallel::stopCluster(cluster))
-  saveRDS(list(signature = parse_signature, hashes = game_hashes, data = parsed), parsed_cache_path)
-}
-combine_official &lt;- function(name) bind_rows(lapply(parsed, `[[`, name))
-official_games &lt;- combine_official(&quot;meta&quot;)
-official_starters &lt;- combine_official(&quot;starters&quot;)
-official_batting_roster &lt;- combine_official(&quot;batting_roster&quot;)
-official_half_scores &lt;- combine_official(&quot;half_scores&quot;)
-official_plays &lt;- combine_official(&quot;plays&quot;)
-official_substitutions &lt;- combine_official(&quot;substitutions&quot;) %&gt;% distinct()
-rm(parsed)
-stopifnot(!anyDuplicated(official_games[c(&quot;team&quot;, &quot;game_id&quot;)]),
-          !anyDuplicated(official_plays[c(&quot;team&quot;, &quot;game_id&quot;, &quot;play_index&quot;)]))</code></pre>
-<pre class="r"><code>dir.create(&quot;source_cache/mlb_seasons&quot;, showWarnings = FALSE)
-fetch_season &lt;- function(year, team = NA_character_) {
-  u &lt;- paste0(&quot;https://statsapi.mlb.com/api/v1/stats?stats=season&amp;group=hitting&amp;season=&quot;, year,
-              &quot;&amp;sportIds=1&amp;playerPool=ALL&amp;limit=10000&amp;gameType=R&quot;,
-              if (!is.na(team)) paste0(&quot;&amp;teamId=&quot;, team_ids[[team]]) else &quot;&quot;)
-  path &lt;- file.path(&quot;source_cache/mlb_seasons&quot;, paste0(year, &quot;_&quot;, ifelse(is.na(team), &quot;all&quot;, team), &quot;.rds&quot;))
-  a &lt;- cache_json(u, path)
-  if (is.null(a$data)) stop(&quot;Season statistics unavailable: &quot;, u, &quot;: &quot;, a$error)
-  s &lt;- a$data$stats[[1]]$splits
-  if (!length(s)) stop(&quot;Empty season response: &quot;, u)
-  bind_rows(lapply(s, function(p) tibble(
-    team = team, season = as.integer(scalar(p$season)), batter_id = scalar(p$player$id),
-    official_name = scalar(p$player$fullName),
-    official_pa = num(p$stat$plateAppearances), official_ab = num(p$stat$atBats),
-    official_h = num(p$stat$hits), official_doubles = num(p$stat$doubles),
-    official_triples = num(p$stat$triples), official_hr = num(p$stat$homeRuns),
-    official_bb = num(p$stat$baseOnBalls), official_hbp = num(p$stat$hitByPitch),
-    official_sf = num(p$stat$sacFlies), official_sh = num(p$stat$sacBunts),
-    official_so = num(p$stat$strikeOuts), official_obp = num(p$stat$obp),
-    official_slg = num(p$stat$slg), official_ops = num(p$stat$ops),
-    source_url = u, retrieved_at_utc = a$retrieved_at_utc)))
-}
-official_previous_seasons &lt;- bind_rows(lapply(2022:2025, fetch_season))
-official_team_stats &lt;- bind_rows(lapply(2023:2026, function(y) bind_rows(lapply(teams, function(t) fetch_season(y, t)))))
-stopifnot(!anyDuplicated(official_previous_seasons[c(&quot;season&quot;, &quot;batter_id&quot;)]),
-          !anyDuplicated(official_team_stats[c(&quot;team&quot;, &quot;season&quot;, &quot;batter_id&quot;)]))
-knitr::kable(official_team_stats %&gt;% count(team, season, name = &quot;official_player_rows&quot;))</code></pre>
-<table>
-<thead>
-<tr class="header">
-<th align="left">team</th>
-<th align="right">season</th>
-<th align="right">official_player_rows</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="left">Angels</td>
-<td align="right">2023</td>
-<td align="right">31</td>
-</tr>
-<tr class="even">
-<td align="left">Angels</td>
-<td align="right">2024</td>
-<td align="right">31</td>
-</tr>
-<tr class="odd">
-<td align="left">Angels</td>
-<td align="right">2025</td>
-<td align="right">31</td>
-</tr>
-<tr class="even">
-<td align="left">Angels</td>
-<td align="right">2026</td>
-<td align="right">28</td>
-</tr>
-<tr class="odd">
-<td align="left">Cardinals</td>
-<td align="right">2023</td>
-<td align="right">30</td>
-</tr>
-<tr class="even">
-<td align="left">Cardinals</td>
-<td align="right">2024</td>
-<td align="right">26</td>
-</tr>
-<tr class="odd">
-<td align="left">Cardinals</td>
-<td align="right">2025</td>
-<td align="right">24</td>
-</tr>
-<tr class="even">
-<td align="left">Cardinals</td>
-<td align="right">2026</td>
-<td align="right">25</td>
-</tr>
-<tr class="odd">
-<td align="left">Cubs</td>
-<td align="right">2023</td>
-<td align="right">31</td>
-</tr>
-<tr class="even">
-<td align="left">Cubs</td>
-<td align="right">2024</td>
-<td align="right">25</td>
-</tr>
-<tr class="odd">
-<td align="left">Cubs</td>
-<td align="right">2025</td>
-<td align="right">22</td>
-</tr>
-<tr class="even">
-<td align="left">Cubs</td>
-<td align="right">2026</td>
-<td align="right">31</td>
-</tr>
-<tr class="odd">
-<td align="left">Dodgers</td>
-<td align="right">2023</td>
-<td align="right">30</td>
-</tr>
-<tr class="even">
-<td align="left">Dodgers</td>
-<td align="right">2024</td>
-<td align="right">22</td>
-</tr>
-<tr class="odd">
-<td align="left">Dodgers</td>
-<td align="right">2025</td>
-<td align="right">27</td>
-</tr>
-<tr class="even">
-<td align="left">Dodgers</td>
-<td align="right">2026</td>
-<td align="right">26</td>
-</tr>
-<tr class="odd">
-<td align="left">Giants</td>
-<td align="right">2023</td>
-<td align="right">37</td>
-</tr>
-<tr class="even">
-<td align="left">Giants</td>
-<td align="right">2024</td>
-<td align="right">29</td>
-</tr>
-<tr class="odd">
-<td align="left">Giants</td>
-<td align="right">2025</td>
-<td align="right">27</td>
-</tr>
-<tr class="even">
-<td align="left">Giants</td>
-<td align="right">2026</td>
-<td align="right">37</td>
-</tr>
-</tbody>
-</table>
-<pre class="r"><code>source_game_dates &lt;- pbp_raw %&gt;% transmute(team, game_id = normalize_id(game_id),
-  source_date = as.Date(date)) %&gt;% distinct() %&gt;% left_join(official_games, by = c(&quot;team&quot;, &quot;game_id&quot;))
-date_discrepancies &lt;- source_game_dates %&gt;% filter(source_date != official_date)
-dir.create(&quot;source_cache/mlb_schedules&quot;, showWarnings = FALSE)
-schedule_evidence &lt;- bind_rows(lapply(unique(date_discrepancies$game_id), function(g) {
-  u &lt;- paste0(&quot;https://statsapi.mlb.com/api/v1/schedule?sportId=1&amp;gamePk=&quot;, g)
-  a &lt;- cache_json(u, file.path(&quot;source_cache/mlb_schedules&quot;, paste0(g, &quot;.rds&quot;)))
-  games &lt;- unlist(lapply(a$data$dates, function(d) d$games), recursive = FALSE)
-  # A postponed game can appear twice: the old schedule entry and the actual played date.
-  candidates &lt;- Filter(function(p) scalar(p$gamePk) == g &amp;&amp; !is.null(p$rescheduleGameDate), games)
-  if (length(candidates) != 1L) return(tibble(game_id = g, reschedule_verified = FALSE,
-    scheduled_utc_date = NA_character_, scheduled_eastern_date = NA_character_, reschedule_date = NA_character_,
-    schedule_official_date = NA_character_, schedule_status = NA_character_, schedule_source_url = u))
-  p &lt;- candidates[[1]]
-  tibble(game_id = g, scheduled_utc_date = substr(scalar(p$gameDate), 1, 10),
-    scheduled_eastern_date = format(as.POSIXct(scalar(p$gameDate), format = &quot;%Y-%m-%dT%H:%M:%SZ&quot;, tz = &quot;UTC&quot;),
-                                    tz = &quot;America/New_York&quot;, format = &quot;%Y-%m-%d&quot;),
-    reschedule_date = scalar(p$rescheduleGameDate), schedule_official_date = scalar(p$officialDate),
-    schedule_status = scalar(p$status$detailedState), schedule_source_url = u,
-    reschedule_verified = !is.na(scalar(p$rescheduleGameDate)))
-}))
-date_corrections &lt;- date_discrepancies %&gt;% left_join(schedule_evidence, by = &quot;game_id&quot;) %&gt;% mutate(
-  date_correction_verified = coalesce(reschedule_verified &amp; as.character(official_date) == reschedule_date &amp;
-    (as.character(source_date) == scheduled_utc_date | as.character(source_date) == scheduled_eastern_date), FALSE))
-knitr::kable(date_corrections %&gt;% select(team, game_id, source_date, official_date, date_correction_verified))</code></pre>
-<table>
-<thead>
-<tr class="header">
-<th align="left">team</th>
-<th align="left">game_id</th>
-<th align="left">source_date</th>
-<th align="left">official_date</th>
-<th align="left">date_correction_verified</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="left">Dodgers</td>
-<td align="left">745816</td>
-<td align="left">2024-05-27</td>
-<td align="left">2024-05-28</td>
-<td align="left">TRUE</td>
-</tr>
-<tr class="even">
-<td align="left">Cubs</td>
-<td align="left">718700</td>
-<td align="left">2023-04-05</td>
-<td align="left">2023-09-01</td>
-<td align="left">TRUE</td>
-</tr>
-<tr class="odd">
-<td align="left">Cubs</td>
-<td align="left">746891</td>
-<td align="left">2024-04-18</td>
-<td align="left">2024-04-20</td>
-<td align="left">TRUE</td>
-</tr>
-<tr class="even">
-<td align="left">Cubs</td>
-<td align="left">745175</td>
-<td align="left">2024-05-24</td>
-<td align="left">2024-07-13</td>
-<td align="left">TRUE</td>
-</tr>
-<tr class="odd">
-<td align="left">Cubs</td>
-<td align="left">777459</td>
-<td align="left">2025-06-18</td>
-<td align="left">2025-08-18</td>
-<td align="left">TRUE</td>
-</tr>
-<tr class="even">
-<td align="left">Cubs</td>
-<td align="left">776691</td>
-<td align="left">2025-08-18</td>
-<td align="left">2025-08-19</td>
-<td align="left">TRUE</td>
-</tr>
-<tr class="odd">
-<td align="left">Cardinals</td>
-<td align="left">717550</td>
-<td align="left">2023-06-30</td>
-<td align="left">2023-07-01</td>
-<td align="left">TRUE</td>
-</tr>
-<tr class="even">
-<td align="left">Cardinals</td>
-<td align="left">746481</td>
-<td align="left">2024-04-29</td>
-<td align="left">2024-04-30</td>
-<td align="left">TRUE</td>
-</tr>
-<tr class="odd">
-<td align="left">Cardinals</td>
-<td align="left">745184</td>
-<td align="left">2024-05-08</td>
-<td align="left">2024-08-05</td>
-<td align="left">TRUE</td>
-</tr>
-<tr class="even">
-<td align="left">Cardinals</td>
-<td align="left">745175</td>
-<td align="left">2024-05-24</td>
-<td align="left">2024-07-13</td>
-<td align="left">TRUE</td>
-</tr>
-<tr class="odd">
-<td align="left">Cardinals</td>
-<td align="left">745157</td>
-<td align="left">2024-06-25</td>
-<td align="left">2024-06-26</td>
-<td align="left">TRUE</td>
-</tr>
-<tr class="even">
-<td align="left">Cardinals</td>
-<td align="left">745155</td>
-<td align="left">2024-07-09</td>
-<td align="left">2024-07-10</td>
-<td align="left">TRUE</td>
-</tr>
-<tr class="odd">
-<td align="left">Cardinals</td>
-<td align="left">747093</td>
-<td align="left">2024-07-19</td>
-<td align="left">2024-07-20</td>
-<td align="left">TRUE</td>
-</tr>
-<tr class="even">
-<td align="left">Cardinals</td>
-<td align="left">778443</td>
-<td align="left">2025-04-05</td>
-<td align="left">2025-04-06</td>
-<td align="left">TRUE</td>
-</tr>
-<tr class="odd">
-<td align="left">Cardinals</td>
-<td align="left">778134</td>
-<td align="left">2025-04-29</td>
-<td align="left">2025-04-30</td>
-<td align="left">TRUE</td>
-</tr>
-<tr class="even">
-<td align="left">Cardinals</td>
-<td align="left">778068</td>
-<td align="left">2025-05-03</td>
-<td align="left">2025-05-04</td>
-<td align="left">TRUE</td>
-</tr>
-<tr class="odd">
-<td align="left">Cardinals</td>
-<td align="left">777933</td>
-<td align="left">2025-05-13</td>
-<td align="left">2025-05-14</td>
-<td align="left">TRUE</td>
-</tr>
-<tr class="even">
-<td align="left">Cardinals</td>
-<td align="left">777642</td>
-<td align="left">2025-06-04</td>
-<td align="left">2025-06-05</td>
-<td align="left">TRUE</td>
-</tr>
-<tr class="odd">
-<td align="left">Cardinals</td>
-<td align="left">777458</td>
-<td align="left">2025-06-18</td>
-<td align="left">2025-06-19</td>
-<td align="left">TRUE</td>
-</tr>
-<tr class="even">
-<td align="left">Angels</td>
-<td align="left">717247</td>
-<td align="left">2023-07-26</td>
-<td align="left">2023-07-27</td>
-<td align="left">TRUE</td>
-</tr>
-<tr class="odd">
-<td align="left">Angels</td>
-<td align="left">716903</td>
-<td align="left">2023-08-21</td>
-<td align="left">2023-08-23</td>
-<td align="left">TRUE</td>
-</tr>
-<tr class="even">
-<td align="left">Angels</td>
-<td align="left">745713</td>
-<td align="left">2024-08-06</td>
-<td align="left">2024-08-07</td>
-<td align="left">TRUE</td>
-</tr>
-<tr class="odd">
-<td align="left">Giants</td>
-<td align="left">718558</td>
-<td align="left">2023-04-16</td>
-<td align="left">2023-07-24</td>
-<td align="left">TRUE</td>
-</tr>
-<tr class="even">
-<td align="left">Giants</td>
-<td align="left">716581</td>
-<td align="left">2023-09-14</td>
-<td align="left">2023-09-16</td>
-<td align="left">TRUE</td>
-</tr>
-</tbody>
-</table>
+
+read_season &lt;- function(year) {
+  url &lt;- paste0(&quot;https://statsapi.mlb.com/api/v1/stats?stats=season&amp;group=hitting&amp;season=&quot;, year,
+                &quot;&amp;sportIds=1&amp;playerPool=ALL&amp;limit=10000&amp;gameType=R&quot;)
+  splits &lt;- get_json(url, paste0(&quot;source_cache/mlb_seasons/&quot;, year, &quot;_all.rds&quot;))$stats[[1]]$splits
+  bind_rows(lapply(splits, function(p) {
+    s &lt;- p$stat
+    list(season = year, batter_id = as.character(p$player$id), pa = s$plateAppearances, ab = s$atBats,
+         h = s$hits, doubles = s$doubles, triples = s$triples, hr = s$homeRuns, bb = s$baseOnBalls,
+         hbp = s$hitByPitch, sf = s$sacFlies, obp = suppressWarnings(as.numeric(s$obp)),
+         slg = suppressWarnings(as.numeric(s$slg)), ops = suppressWarnings(as.numeric(s$ops)))
+  }))
+}</code></pre>
+<pre class="r"><code>parsed &lt;- lapply(sort(unique(pbp$game_id)), read_game)
+combine &lt;- function(name) bind_rows(lapply(parsed, function(x) x[[name]]))
+games &lt;- combine(&quot;games&quot;) %&gt;% mutate(date = as.Date(date))
+roster &lt;- combine(&quot;roster&quot;)  # everyone in a batting order, starters and substitutes
+line_scores &lt;- combine(&quot;scores&quot;)
+plays &lt;- combine(&quot;plays&quot;)
+subs &lt;- combine(&quot;subs&quot;) %&gt;% distinct()
+starters &lt;- roster %&gt;% filter(entry == 0)
+
+stats &lt;- bind_rows(read_season(2024), read_season(2025))
+stopifnot(!anyDuplicated(stats[c(&quot;season&quot;, &quot;batter_id&quot;)]))
+lineups &lt;- starters %&gt;%
+  left_join(stats %&gt;% filter(season == 2024) %&gt;% select(-season), by = &quot;batter_id&quot;) %&gt;%
+  mutate(lineup_id = paste(team, game_id, &quot;starting&quot;, sep = &quot;_&quot;))
+
+c(team_games = nrow(games), plays = nrow(plays), substitutions = nrow(subs))</code></pre>
+<pre><code>##    team_games         plays substitutions 
+##           810         30550          1491</code></pre>
 </div>
-<div id="preprocessing-principles" class="section level1" number="3">
-<h1 number="3"><span class="header-section-number">3</span> Preprocessing Principles</h1>
-<ul>
-<li>Standardize the types of team, season, batter_id, game_id, and other join fields while retaining source row numbers.</li>
-<li>Remove exact duplicates from derived tables. Quarantine conflicting values under the same key rather than arbitrarily accepting the first record.</li>
-<li>Player statistics summarize full seasons. Passing quality checks <strong>does not make them suitable for pregame classification</strong>. Pregame statistical windows must be established later.</li>
-<li>Define a <code>minigroup</code> provisionally as one team’s offensive half-inning, keyed by team, game_id, inning, and inning_half.</li>
-<li>Do not replace missing values with zero, treat every event as a completed plate appearance, or automatically change suspicious season labels.</li>
-</ul>
 </div>
-<div id="player-identity-mapping" class="section level1" number="4">
-<h1 number="4"><span class="header-section-number">4</span> Player Identity Mapping</h1>
-<p>Both the play-by-play and probability datasets contain batter_id. Build a candidate mapping from normalized names to IDs, joining automatically only when a name key maps to one ID within the same team and season. Ambiguous mappings remain unresolved. Normalization handles accents and punctuation but does not constitute official identity verification; retain the mapping for manual review.</p>
-<pre class="r"><code>pbp_raw &lt;- pbp_raw %&gt;% mutate(team = trimws(team), season = as.integer(season),
-                             batter_id = normalize_id(batter_id), game_id = normalize_id(game_id))
-prob_raw &lt;- prob_raw %&gt;% mutate(team = trimws(team), season = as.integer(season),
-                               batter_id = normalize_id(batter_id))
-stats_raw &lt;- stats_raw %&gt;% mutate(team = trimws(team), season = as.integer(season))
-identity_evidence &lt;- bind_rows(
-  pbp_raw %&gt;% distinct(team, season, player, batter_id) %&gt;% mutate(source = &quot;pbp&quot;),
-  prob_raw %&gt;% distinct(team, season, player, batter_id) %&gt;% mutate(source = &quot;probabilities&quot;)
-) %&gt;% mutate(player_key = name_key(player))
-identity_map &lt;- identity_evidence %&gt;% group_by(team, season, player_key) %&gt;%
-  summarise(n_ids = n_distinct(batter_id),
-            batter_id = if (n_distinct(batter_id) == 1L) first(batter_id) else NA_character_,
-            observed_names = paste(sort(unique(player)), collapse = &quot;; &quot;), .groups = &quot;drop&quot;)
-identity_ambiguities &lt;- identity_map %&gt;% filter(n_ids != 1L)
-stats &lt;- stats_raw %&gt;% mutate(player_key = name_key(player)) %&gt;%
-  left_join(identity_map, by = c(&quot;team&quot;, &quot;season&quot;, &quot;player_key&quot;)) %&gt;%
-  mutate(identity_status = case_when(is.na(n_ids) ~ &quot;unmatched&quot;, n_ids != 1L ~ &quot;ambiguous&quot;,
-                                    TRUE ~ &quot;unique_normalized_match&quot;))
-stopifnot(nrow(stats) == nrow(stats_raw))
-knitr::kable(count(stats, identity_status))</code></pre>
-<table>
-<thead>
-<tr class="header">
-<th align="left">identity_status</th>
-<th align="right">n</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="left">unique_normalized_match</td>
-<td align="right">210</td>
-</tr>
-<tr class="even">
-<td align="left">unmatched</td>
-<td align="right">2</td>
-</tr>
-</tbody>
-</table>
-</div>
-<div id="dataset-1-player-statistics" class="section level1" number="5">
-<h1 number="5"><span class="header-section-number">5</span> Dataset 1: Player Statistics</h1>
-<p>Retain all input records in <code>player_stats_audited</code>. Include records in <code>player_stats_validated</code> only when identity is unique, conflicts are absent, and required checks pass. Do not fill missing PA from other seasons or incompatible statistical definitions. Independently recalculate SLG from H, 2B, 3B, HR, and AB for validation. HBP and SF, which are needed to verify OBP, are absent from this table, so OBP cannot be fully verified here.</p>
-<pre class="r"><code>stats &lt;- stats %&gt;% rename(doubles = `2b`, triples = `3b`) %&gt;%
-  mutate(singles_calculated = h - doubles - triples - hr,
-         total_bases_calculated = h + doubles + 2 * triples + 3 * hr,
-         slg_calculated = if_else(ab &gt; 0, total_bases_calculated / ab, NA_real_),
-         avg_calculated = if_else(ab &gt; 0, h / ab, NA_real_),
-         ops_calculated = obp + slg,
-         so_pa_calculated = if_else(pa &gt; 0, so / pa, NA_real_))
-# Compare all original numeric fields; exclude source row numbers from exact-duplicate detection.
-stat_fields &lt;- c(&quot;team&quot;, &quot;season&quot;, &quot;player_key&quot;, &quot;g&quot;, &quot;ab&quot;, &quot;r&quot;, &quot;h&quot;, &quot;doubles&quot;,
-                 &quot;triples&quot;, &quot;hr&quot;, &quot;rbi&quot;, &quot;bb&quot;, &quot;so&quot;, &quot;sb&quot;, &quot;cs&quot;, &quot;avg&quot;, &quot;obp&quot;, &quot;slg&quot;, &quot;ops&quot;, &quot;pa&quot;, &quot;so_pa&quot;)
-stats$exact_duplicate &lt;- duplicated(as.data.frame(stats[stat_fields]))
-versions &lt;- stats %&gt;% filter(!exact_duplicate) %&gt;% count(team, season, player_key, name = &quot;n_versions&quot;)
-stats &lt;- stats %&gt;% left_join(versions, by = c(&quot;team&quot;, &quot;season&quot;, &quot;player_key&quot;)) %&gt;%
-  mutate(conflicting_key = n_versions &gt; 1L,
-         invalid_pa = is.na(pa) | pa &lt;= 0 | pa &lt; ab,
-         invalid_counts = is.na(ab) | ab &lt;= 0 | is.na(h) | h &lt; 0 | h &gt; ab |
-           is.na(singles_calculated) | singles_calculated &lt; 0 |
-           if_any(all_of(c(&quot;g&quot;, &quot;doubles&quot;, &quot;triples&quot;, &quot;hr&quot;, &quot;bb&quot;, &quot;so&quot;)), ~is.na(.x) | .x &lt; 0 | .x %% 1 != 0),
-         invalid_rates = is.na(obp) | obp &lt; 0 | obp &gt; 1 | is.na(slg) | slg &lt; 0 | slg &gt; 4 |
-           is.na(ops) | ops &lt; 0 | ops &gt; 5 | is.na(avg) | avg &lt; 0 | avg &gt; 1,
-         inconsistent_rates = coalesce(abs(slg - slg_calculated) &gt; 0.0011, TRUE) |
-           coalesce(abs(avg - avg_calculated) &gt; 0.0011, TRUE) |
-           coalesce(abs(ops - ops_calculated) &gt; 0.0021, TRUE),
-         metadata_invalid = is.na(team) | !team %in% teams | is.na(season) | !season %in% 2023:2026,
-         eligible_season_stats = !exact_duplicate &amp; !conflicting_key &amp; !invalid_pa &amp;
-           !invalid_counts &amp; !invalid_rates &amp; !inconsistent_rates &amp; !metadata_invalid &amp;
-           identity_status == &quot;unique_normalized_match&quot;,
-         stats_timing = &quot;full_season_not_pregame&quot;)
-# Prevent nonunique final join keys when different name keys map to the same player.
-id_collisions &lt;- stats %&gt;% filter(eligible_season_stats) %&gt;%
-  count(team, season, batter_id) %&gt;% filter(n &gt; 1L)
-stats &lt;- stats %&gt;% left_join(id_collisions %&gt;% transmute(team, season, batter_id, id_collision = TRUE),
-                            by = c(&quot;team&quot;, &quot;season&quot;, &quot;batter_id&quot;)) %&gt;%
-  mutate(id_collision = coalesce(id_collision, FALSE),
-         eligible_season_stats = eligible_season_stats &amp; !id_collision)
-stats_valid &lt;- stats %&gt;% filter(eligible_season_stats)
-stats_issues &lt;- stats %&gt;% filter(!eligible_season_stats)
-stats_coverage &lt;- stats %&gt;% group_by(team, season) %&gt;%
-  summarise(raw_rows = n(), unique_names = n_distinct(player_key),
-            validated_rows = sum(eligible_season_stats),
-            validated_pa150 = sum(eligible_season_stats &amp; pa &gt;= 150, na.rm = TRUE), .groups = &quot;drop&quot;)
-knitr::kable(stats_coverage)</code></pre>
-<table>
-<thead>
-<tr class="header">
-<th align="left">team</th>
-<th align="right">season</th>
-<th align="right">raw_rows</th>
-<th align="right">unique_names</th>
-<th align="right">validated_rows</th>
-<th align="right">validated_pa150</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="left">Angels</td>
-<td align="right">2023</td>
-<td align="right">11</td>
-<td align="right">11</td>
-<td align="right">11</td>
-<td align="right">11</td>
-</tr>
-<tr class="even">
-<td align="left">Angels</td>
-<td align="right">2024</td>
-<td align="right">10</td>
-<td align="right">10</td>
-<td align="right">10</td>
-<td align="right">10</td>
-</tr>
-<tr class="odd">
-<td align="left">Angels</td>
-<td align="right">2025</td>
-<td align="right">10</td>
-<td align="right">10</td>
-<td align="right">10</td>
-<td align="right">10</td>
-</tr>
-<tr class="even">
-<td align="left">Angels</td>
-<td align="right">2026</td>
-<td align="right">12</td>
-<td align="right">12</td>
-<td align="right">12</td>
-<td align="right">12</td>
-</tr>
-<tr class="odd">
-<td align="left">Cardinals</td>
-<td align="right">2023</td>
-<td align="right">12</td>
-<td align="right">12</td>
-<td align="right">12</td>
-<td align="right">12</td>
-</tr>
-<tr class="even">
-<td align="left">Cardinals</td>
-<td align="right">2024</td>
-<td align="right">10</td>
-<td align="right">10</td>
-<td align="right">10</td>
-<td align="right">10</td>
-</tr>
-<tr class="odd">
-<td align="left">Cardinals</td>
-<td align="right">2025</td>
-<td align="right">12</td>
-<td align="right">12</td>
-<td align="right">12</td>
-<td align="right">12</td>
-</tr>
-<tr class="even">
-<td align="left">Cardinals</td>
-<td align="right">2026</td>
-<td align="right">10</td>
-<td align="right">10</td>
-<td align="right">10</td>
-<td align="right">10</td>
-</tr>
-<tr class="odd">
-<td align="left">Cubs</td>
-<td align="right">2023</td>
-<td align="right">10</td>
-<td align="right">10</td>
-<td align="right">10</td>
-<td align="right">10</td>
-</tr>
-<tr class="even">
-<td align="left">Cubs</td>
-<td align="right">2024</td>
-<td align="right">10</td>
-<td align="right">10</td>
-<td align="right">10</td>
-<td align="right">10</td>
-</tr>
-<tr class="odd">
-<td align="left">Cubs</td>
-<td align="right">2025</td>
-<td align="right">10</td>
-<td align="right">10</td>
-<td align="right">10</td>
-<td align="right">10</td>
-</tr>
-<tr class="even">
-<td align="left">Cubs</td>
-<td align="right">2026</td>
-<td align="right">12</td>
-<td align="right">12</td>
-<td align="right">12</td>
-<td align="right">12</td>
-</tr>
-<tr class="odd">
-<td align="left">Dodgers</td>
-<td align="right">2023</td>
-<td align="right">11</td>
-<td align="right">11</td>
-<td align="right">11</td>
-<td align="right">11</td>
-</tr>
-<tr class="even">
-<td align="left">Dodgers</td>
-<td align="right">2024</td>
-<td align="right">1</td>
-<td align="right">1</td>
-<td align="right">1</td>
-<td align="right">1</td>
-</tr>
-<tr class="odd">
-<td align="left">Dodgers</td>
-<td align="right">2025</td>
-<td align="right">23</td>
-<td align="right">15</td>
-<td align="right">4</td>
-<td align="right">4</td>
-</tr>
-<tr class="even">
-<td align="left">Dodgers</td>
-<td align="right">2026</td>
-<td align="right">11</td>
-<td align="right">11</td>
-<td align="right">10</td>
-<td align="right">10</td>
-</tr>
-<tr class="odd">
-<td align="left">Giants</td>
-<td align="right">2023</td>
-<td align="right">12</td>
-<td align="right">12</td>
-<td align="right">12</td>
-<td align="right">12</td>
-</tr>
-<tr class="even">
-<td align="left">Giants</td>
-<td align="right">2024</td>
-<td align="right">5</td>
-<td align="right">5</td>
-<td align="right">5</td>
-<td align="right">5</td>
-</tr>
-<tr class="odd">
-<td align="left">Giants</td>
-<td align="right">2025</td>
-<td align="right">10</td>
-<td align="right">10</td>
-<td align="right">10</td>
-<td align="right">10</td>
-</tr>
-<tr class="even">
-<td align="left">Giants</td>
-<td align="right">2026</td>
-<td align="right">10</td>
-<td align="right">10</td>
-<td align="right">10</td>
-<td align="right">10</td>
-</tr>
-</tbody>
-</table>
-<pre class="r"><code>knitr::kable(stats_issues %&gt;% select(source_row, team, season, player, pa, ab,
-                                    conflicting_key, invalid_pa, identity_status))</code></pre>
-<table>
-<thead>
-<tr class="header">
-<th align="right">source_row</th>
-<th align="left">team</th>
-<th align="right">season</th>
-<th align="left">player</th>
-<th align="right">pa</th>
-<th align="right">ab</th>
-<th align="left">conflicting_key</th>
-<th align="left">invalid_pa</th>
-<th align="left">identity_status</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="right">8</td>
-<td align="left">Dodgers</td>
-<td align="right">2026</td>
-<td align="left">Teoscar Hernandez</td>
-<td align="right">NA</td>
-<td align="right">442</td>
-<td align="left">FALSE</td>
-<td align="left">TRUE</td>
-<td align="left">unique_normalized_match</td>
-</tr>
-<tr class="even">
-<td align="right">58</td>
-<td align="left">Dodgers</td>
-<td align="right">2025</td>
-<td align="left">Andy Pages</td>
-<td align="right">624</td>
-<td align="right">581</td>
-<td align="left">TRUE</td>
-<td align="left">FALSE</td>
-<td align="left">unique_normalized_match</td>
-</tr>
-<tr class="odd">
-<td align="right">59</td>
-<td align="left">Dodgers</td>
-<td align="right">2025</td>
-<td align="left">Teoscar Hernández</td>
-<td align="right">546</td>
-<td align="right">511</td>
-<td align="left">TRUE</td>
-<td align="left">FALSE</td>
-<td align="left">unique_normalized_match</td>
-</tr>
-<tr class="even">
-<td align="right">60</td>
-<td align="left">Dodgers</td>
-<td align="right">2025</td>
-<td align="left">Freddie Freeman</td>
-<td align="right">627</td>
-<td align="right">556</td>
-<td align="left">TRUE</td>
-<td align="left">FALSE</td>
-<td align="left">unique_normalized_match</td>
-</tr>
-<tr class="odd">
-<td align="right">61</td>
-<td align="left">Dodgers</td>
-<td align="right">2025</td>
-<td align="left">Mookie Betts</td>
-<td align="right">663</td>
-<td align="right">589</td>
-<td align="left">TRUE</td>
-<td align="left">FALSE</td>
-<td align="left">unique_normalized_match</td>
-</tr>
-<tr class="even">
-<td align="right">62</td>
-<td align="left">Dodgers</td>
-<td align="right">2025</td>
-<td align="left">Max Muncy</td>
-<td align="right">388</td>
-<td align="right">313</td>
-<td align="left">TRUE</td>
-<td align="left">FALSE</td>
-<td align="left">unique_normalized_match</td>
-</tr>
-<tr class="odd">
-<td align="right">63</td>
-<td align="left">Dodgers</td>
-<td align="right">2025</td>
-<td align="left">Will Smith</td>
-<td align="right">436</td>
-<td align="right">362</td>
-<td align="left">TRUE</td>
-<td align="left">FALSE</td>
-<td align="left">unique_normalized_match</td>
-</tr>
-<tr class="even">
-<td align="right">66</td>
-<td align="left">Dodgers</td>
-<td align="right">2025</td>
-<td align="left">Enrique Hernández</td>
-<td align="right">256</td>
-<td align="right">232</td>
-<td align="left">TRUE</td>
-<td align="left">FALSE</td>
-<td align="left">unique_normalized_match</td>
-</tr>
-<tr class="odd">
-<td align="right">67</td>
-<td align="left">Dodgers</td>
-<td align="right">2025</td>
-<td align="left">Miguel Rojas</td>
-<td align="right">317</td>
-<td align="right">290</td>
-<td align="left">TRUE</td>
-<td align="left">FALSE</td>
-<td align="left">unique_normalized_match</td>
-</tr>
-<tr class="even">
-<td align="right">112</td>
-<td align="left">Dodgers</td>
-<td align="right">2025</td>
-<td align="left">Teoscar Hernández</td>
-<td align="right">546</td>
-<td align="right">589</td>
-<td align="left">TRUE</td>
-<td align="left">TRUE</td>
-<td align="left">unique_normalized_match</td>
-</tr>
-<tr class="odd">
-<td align="right">113</td>
-<td align="left">Dodgers</td>
-<td align="right">2025</td>
-<td align="left">Freddie Freeman</td>
-<td align="right">627</td>
-<td align="right">542</td>
-<td align="left">TRUE</td>
-<td align="left">FALSE</td>
-<td align="left">unique_normalized_match</td>
-</tr>
-<tr class="even">
-<td align="right">114</td>
-<td align="left">Dodgers</td>
-<td align="right">2025</td>
-<td align="left">Will Smith</td>
-<td align="right">436</td>
-<td align="right">476</td>
-<td align="left">TRUE</td>
-<td align="left">TRUE</td>
-<td align="left">unique_normalized_match</td>
-</tr>
-<tr class="odd">
-<td align="right">115</td>
-<td align="left">Dodgers</td>
-<td align="right">2025</td>
-<td align="left">Mookie Betts</td>
-<td align="right">663</td>
-<td align="right">450</td>
-<td align="left">TRUE</td>
-<td align="left">FALSE</td>
-<td align="left">unique_normalized_match</td>
-</tr>
-<tr class="even">
-<td align="right">116</td>
-<td align="left">Dodgers</td>
-<td align="right">2025</td>
-<td align="left">Max Muncy</td>
-<td align="right">388</td>
-<td align="right">237</td>
-<td align="left">TRUE</td>
-<td align="left">FALSE</td>
-<td align="left">unique_normalized_match</td>
-</tr>
-<tr class="odd">
-<td align="right">117</td>
-<td align="left">Dodgers</td>
-<td align="right">2025</td>
-<td align="left">Andy Pages</td>
-<td align="right">624</td>
-<td align="right">403</td>
-<td align="left">TRUE</td>
-<td align="left">FALSE</td>
-<td align="left">unique_normalized_match</td>
-</tr>
-<tr class="even">
-<td align="right">118</td>
-<td align="left">Dodgers</td>
-<td align="right">2025</td>
-<td align="left">Enrique Hernández</td>
-<td align="right">256</td>
-<td align="right">362</td>
-<td align="left">TRUE</td>
-<td align="left">TRUE</td>
-<td align="left">unique_normalized_match</td>
-</tr>
-<tr class="odd">
-<td align="right">119</td>
-<td align="left">Dodgers</td>
-<td align="right">2025</td>
-<td align="left">Gavin Lux</td>
-<td align="right">NA</td>
-<td align="right">439</td>
-<td align="left">FALSE</td>
-<td align="left">TRUE</td>
-<td align="left">unmatched</td>
-</tr>
-<tr class="even">
-<td align="right">120</td>
-<td align="left">Dodgers</td>
-<td align="right">2025</td>
-<td align="left">Jason Heyward</td>
-<td align="right">NA</td>
-<td align="right">173</td>
-<td align="left">FALSE</td>
-<td align="left">TRUE</td>
-<td align="left">unmatched</td>
-</tr>
-<tr class="odd">
-<td align="right">121</td>
-<td align="left">Dodgers</td>
-<td align="right">2025</td>
-<td align="left">Miguel Rojas</td>
-<td align="right">317</td>
-<td align="right">307</td>
-<td align="left">TRUE</td>
-<td align="left">FALSE</td>
-<td align="left">unique_normalized_match</td>
-</tr>
-<tr class="even">
-<td align="right">122</td>
-<td align="left">Dodgers</td>
-<td align="right">2025</td>
-<td align="left">Chris Taylor</td>
-<td align="right">35</td>
-<td align="right">213</td>
-<td align="left">FALSE</td>
-<td align="left">TRUE</td>
-<td align="left">unique_normalized_match</td>
-</tr>
-</tbody>
-</table>
-</div>
-<div id="dataset-2-player-outcome-probabilities" class="section level1" number="6">
-<h1 number="6"><span class="header-section-number">6</span> Dataset 2: Player Outcome Probabilities</h1>
-<p>Check the ranges, sums, and key uniqueness of the seven outcome probabilities. Passing these checks establishes numerical consistency, not the correctness of the underlying events or PA denominators.</p>
-<p>Preserve the original SLG as <code>slg_source</code> and exclude it from usable metrics. Check whether it matches the incorrect formula that divides the weighted sum of hit probabilities by PA again. The probability table does not contain AB, so SLG cannot be independently corrected with confidence. Join <code>slg_from_validated_stats</code> only from validated player statistics, leaving unmatched values missing. This joined value still represents a full season.</p>
-<pre class="r"><code>probs &lt;- prob_raw %&gt;% rename(p_single = single, p_double = double, p_triple = triple,
-                            p_home_run = home_run, p_walk_hbp = walk_hbp,
-                            p_error_interference = error_interference, p_out = out,
-                            slg_source = slg, prob_sum_source = prob_sum)
-pcols &lt;- c(&quot;p_single&quot;, &quot;p_double&quot;, &quot;p_triple&quot;, &quot;p_home_run&quot;, &quot;p_walk_hbp&quot;, &quot;p_error_interference&quot;, &quot;p_out&quot;)
-probs$exact_duplicate &lt;- duplicated(as.data.frame(probs[setdiff(names(probs), &quot;source_row&quot;)]))
-prob_versions &lt;- probs %&gt;% filter(!exact_duplicate) %&gt;% count(team, season, batter_id, name = &quot;n_versions&quot;)
-probs &lt;- probs %&gt;% left_join(prob_versions, by = c(&quot;team&quot;, &quot;season&quot;, &quot;batter_id&quot;)) %&gt;%
-  mutate(prob_sum_calculated = rowSums(pick(all_of(pcols))),
-         invalid_probability = if_any(all_of(pcols), ~is.na(.x) | .x &lt; 0 | .x &gt; 1),
-         invalid_sum = is.na(prob_sum_calculated) | abs(prob_sum_calculated - 1) &gt; 1e-8,
-         supplied_sum_mismatch = is.na(prob_sum_source) | abs(prob_sum_calculated - prob_sum_source) &gt; 1e-8,
-         invalid_pa = is.na(pa) | pa &lt;= 0 | pa %% 1 != 0,
-         conflicting_key = n_versions &gt; 1L,
-         weighted_hit_probability = p_single + 2*p_double + 3*p_triple + 4*p_home_run,
-         slg_matches_suspect_formula = abs(slg_source - weighted_hit_probability / pa) &lt; 1e-8,
-         slg_source_usable = FALSE,
-         eligible_probability_vector = !exact_duplicate &amp; !invalid_probability &amp; !invalid_sum &amp;
-           !supplied_sum_mismatch &amp; !invalid_pa &amp; !conflicting_key &amp;
-           !is.na(team) &amp; team %in% teams &amp; !is.na(season) &amp; season %in% 2023:2026 &amp; !is.na(batter_id)) %&gt;%
-  left_join(stats_valid %&gt;% select(team, season, batter_id, slg_from_validated_stats = slg,
-                                  obp_from_validated_stats = obp, ops_from_validated_stats = ops,
-                                  pa_from_validated_stats = pa),
-            by = c(&quot;team&quot;, &quot;season&quot;, &quot;batter_id&quot;)) %&gt;%
-  mutate(pa_difference_stats = pa - pa_from_validated_stats,
-         probability_timing = &quot;full_season_not_pregame&quot;)
-stopifnot(nrow(probs) == nrow(prob_raw))
-knitr::kable(probs %&gt;% summarise(rows = n(), valid_vectors = sum(eligible_probability_vector),
-                                suspect_slg_formula_matches = sum(slg_matches_suspect_formula, na.rm = TRUE),
-                                validated_slg_available = sum(!is.na(slg_from_validated_stats))))</code></pre>
-<table>
-<thead>
-<tr class="header">
-<th align="right">rows</th>
-<th align="right">valid_vectors</th>
-<th align="right">suspect_slg_formula_matches</th>
-<th align="right">validated_slg_available</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="right">511</td>
-<td align="right">511</td>
-<td align="right">511</td>
-<td align="right">192</td>
-</tr>
-</tbody>
-</table>
-</div>
-<div id="dataset-3-play-by-play-data" class="section level1" number="7">
-<h1 number="7"><span class="header-section-number">7</span> Dataset 3: Play-by-Play Data</h1>
-<div id="event-and-field-standardization" class="section level2" number="7.1">
-<h2 number="7.1"><span class="header-section-number">7.1</span> Event and Field Standardization</h2>
-<p>Standardize synonymous event labels while preserving their original names. The plate-appearance status of <code>Runner Out</code> is unclear and remains unresolved. Stolen-base, pickoff, and wild-pitch events do not advance the batting order. The original runner_movements field contains both Python literals and JSON structures. Preserve these strings at this stage without unsafe evaluation or unverified base-state reconstruction.</p>
-<pre class="r"><code>event_aliases &lt;- c(groundout = &quot;field_out&quot;, flyout = &quot;field_out&quot;, lineout = &quot;field_out&quot;,
-                   pop_out = &quot;field_out&quot;, bunt_groundout = &quot;field_out&quot;, bunt_lineout = &quot;field_out&quot;,
-                   bunt_pop_out = &quot;field_out&quot;, forceout = &quot;force_out&quot;, grounded_into_dp = &quot;grounded_into_double_play&quot;,
-                   fielders_choice = &quot;fielders_choice&quot;, fielders_choice_out = &quot;fielders_choice_out&quot;,
-                   catcher_interference = &quot;catcher_interf&quot;)
-pa_events &lt;- c(&quot;field_out&quot;, &quot;strikeout&quot;, &quot;single&quot;, &quot;double&quot;, &quot;triple&quot;, &quot;home_run&quot;, &quot;walk&quot;,
+<div id="half-inning-sample" class="section level1" number="3">
+<h1 number="3"><span class="header-section-number">3</span> Half-Inning Sample</h1>
+<div id="plays-and-half-innings" class="section level2" number="3.1">
+<h2 number="3.1"><span class="header-section-number">3.1</span> Plays and Half-Innings</h2>
+<p>Runs on a play are the change in the official score; the batting slot comes from counting completed plate appearances through the game.</p>
+<pre class="r"><code>pa_events &lt;- c(&quot;field_out&quot;, &quot;strikeout&quot;, &quot;single&quot;, &quot;double&quot;, &quot;triple&quot;, &quot;home_run&quot;, &quot;walk&quot;,
                &quot;intent_walk&quot;, &quot;hit_by_pitch&quot;, &quot;force_out&quot;, &quot;grounded_into_double_play&quot;, &quot;sac_fly&quot;,
                &quot;sac_bunt&quot;, &quot;field_error&quot;, &quot;fielders_choice&quot;, &quot;fielders_choice_out&quot;, &quot;double_play&quot;,
                &quot;strikeout_double_play&quot;, &quot;sac_fly_double_play&quot;, &quot;catcher_interf&quot;, &quot;triple_play&quot;)
 non_pa_events &lt;- c(&quot;caught_stealing_2b&quot;, &quot;caught_stealing_3b&quot;, &quot;caught_stealing_home&quot;,
                    &quot;pickoff_caught_stealing_2b&quot;, &quot;pickoff_caught_stealing_3b&quot;, &quot;pickoff_1b&quot;,
                    &quot;pickoff_2b&quot;, &quot;pickoff_3b&quot;, &quot;stolen_base_2b&quot;, &quot;stolen_base_3b&quot;, &quot;stolen_base_home&quot;, &quot;wild_pitch&quot;)
-pbp &lt;- pbp_raw %&gt;% rename(event_source = event, inning_half_source = inning_half,
-                         outs_before_source = outs_before, outs_added_source = outs_added) %&gt;%
-  mutate(date = as.Date(date), inning = as.integer(inning), play_index = as.integer(play_index),
-         inning_half = tolower(inning_half_source), event_token = clean_names(event_source),
-         event = if_else(event_token %in% names(event_aliases), unname(event_aliases[event_token]), event_token),
-         completed_pa = case_when(event %in% pa_events ~ TRUE, event %in% non_pa_events ~ FALSE,
-                                  TRUE ~ NA),
-         runner_format = case_when(grepl(&quot;&#39;movement&#39;&quot;, runner_movements, fixed = TRUE) ~ &quot;python_literal_nested&quot;,
-                                   grepl(&#39;&quot;runner_id&quot;&#39;, runner_movements, fixed = TRUE) ~ &quot;json_flat&quot;, TRUE ~ &quot;other&quot;),
+
+first_sub &lt;- subs %&gt;% group_by(team, game_id) %&gt;% summarise(first_sub = min(play_index), .groups = &quot;drop&quot;)
+
+plays &lt;- plays %&gt;%
+  mutate(completed_pa = case_when(event %in% pa_events ~ TRUE,
+                                  event %in% non_pa_events ~ FALSE,
+                                  event %in% c(&quot;other_out&quot;, &quot;runner_out&quot;) &amp; runner_out_only ~ FALSE)) %&gt;%
+  arrange(team, game_id, play_index) %&gt;%
+  group_by(team, game_id) %&gt;%
+  mutate(runs = score_after - lag(score_after, default = 0),
+         lineup_slot = (cumsum(completed_pa %in% TRUE) - 1) %% 9 + 1) %&gt;%
+  ungroup() %&gt;%
+  left_join(first_sub, by = c(&quot;team&quot;, &quot;game_id&quot;)) %&gt;%
+  left_join(starters %&gt;% select(team, game_id, lineup_slot = slot, starter_id = batter_id),
+            by = c(&quot;team&quot;, &quot;game_id&quot;, &quot;lineup_slot&quot;))
+
+lineup_ok &lt;- lineups %&gt;% group_by(lineup_id) %&gt;%
+  summarise(has_stats = all(!is.na(ops) &amp; !is.na(ab) &amp; ab &gt; 0),
+            pa_100 = has_stats &amp; all(pa &gt;= 100))
+
+halves &lt;- plays %&gt;%
+  group_by(team, game_id, inning, inning_half) %&gt;%
+  summarise(last_play = max(play_index), end_outs = last(outs_after), runs = sum(runs),
+            n_completed_pa = sum(completed_pa %in% TRUE),
+            starting_slot = first(lineup_slot[completed_pa %in% TRUE]),
+            first_batter_id = first(batter_id[completed_pa %in% TRUE]),
+            first_sub = first(first_sub), .groups = &quot;drop&quot;) %&gt;%
+  left_join(games %&gt;% select(team, game_id, date), by = c(&quot;team&quot;, &quot;game_id&quot;)) %&gt;%
+  left_join(line_scores, by = c(&quot;team&quot;, &quot;game_id&quot;, &quot;inning&quot;, &quot;inning_half&quot;)) %&gt;%
+  mutate(lineup_id = paste(team, game_id, &quot;starting&quot;, sep = &quot;_&quot;),
          minigroup_id = paste(team, game_id, inning, inning_half, sep = &quot;_&quot;),
-         metadata_invalid = is.na(team) | !team %in% teams | is.na(season) | !season %in% 2023:2026 |
-           is.na(game_id) | is.na(inning) | inning &lt; 1 | is.na(inning_half) | !inning_half %in% c(&quot;top&quot;, &quot;bottom&quot;) |
-           is.na(date) | as.integer(format(date, &quot;%Y&quot;)) != season,
-         invalid_outs = is.na(outs_after) | outs_after &lt; 0 | outs_after &gt; 3 | outs_after %% 1 != 0,
-         invalid_runs = is.na(runs_scored) | runs_scored &lt; 0 | runs_scored %% 1 != 0)
-pbp &lt;- pbp %&gt;% left_join(date_corrections %&gt;% select(team, game_id,
-  date_corrected_to = official_date, date_correction_verified), by = c(&quot;team&quot;, &quot;game_id&quot;)) %&gt;%
-  mutate(date_source = date, date_correction_verified = coalesce(date_correction_verified, FALSE),
-         date = if_else(date_correction_verified, date_corrected_to, date))
-pbp$exact_duplicate &lt;- duplicated(as.data.frame(pbp[setdiff(names(pbp), &quot;source_row&quot;)]))
-pbp_versions &lt;- pbp %&gt;% filter(!exact_duplicate) %&gt;% count(team, game_id, play_index, name = &quot;n_versions&quot;)
-pbp &lt;- pbp %&gt;% left_join(pbp_versions, by = c(&quot;team&quot;, &quot;game_id&quot;, &quot;play_index&quot;)) %&gt;%
-  mutate(conflicting_key = n_versions &gt; 1L) %&gt;% arrange(team, game_id, play_index)
-# Resolve only cases with official identities, runner-only evidence, and the same next-inning batter.
-pbp &lt;- pbp %&gt;% left_join(official_games, by = c(&quot;team&quot;, &quot;game_id&quot;)) %&gt;%
-  left_join(official_plays %&gt;% select(team, game_id, play_index, official_batter_id,
-    official_event, official_outs_after, official_score_after, official_runner_out_only),
-    by = c(&quot;team&quot;, &quot;game_id&quot;, &quot;play_index&quot;)) %&gt;%
-  group_by(team, game_id) %&gt;% arrange(play_index, .by_group = TRUE) %&gt;%
-  mutate(next_record_batter_id = lead(batter_id), next_record_inning = lead(inning),
-    official_game_identity_verified = coalesce(date == official_date &amp; inning_half == official_half &amp;
-      official_state == &quot;Final&quot;, FALSE),
-    official_play_identity_verified = official_game_identity_verified &amp;
-      coalesce(batter_id == official_batter_id &amp; outs_after == official_outs_after, FALSE),
-    runner_only_resolution = is.na(completed_pa) &amp; event %in% c(&quot;other_out&quot;, &quot;runner_out&quot;) &amp;
-      official_play_identity_verified &amp; coalesce(official_runner_out_only, FALSE) &amp; outs_after == 3 &amp;
-      coalesce(next_record_batter_id == batter_id &amp; next_record_inning == inning + 1L, FALSE),
-    completed_pa = if_else(runner_only_resolution, FALSE, completed_pa),
-    pa_resolution_basis = case_when(runner_only_resolution ~ &quot;official_runner_out_and_same_batter_next_inning&quot;,
-                                   is.na(completed_pa) ~ &quot;unresolved&quot;, TRUE ~ &quot;event_dictionary&quot;)) %&gt;% ungroup()
-resolved_runner_events &lt;- pbp %&gt;% filter(runner_only_resolution) %&gt;% select(source_row, team, game_id,
-  play_index, batter_id, event, official_event, next_record_batter_id, next_record_inning, pa_resolution_basis)
-event_dictionary &lt;- pbp %&gt;% count(event_source, event, completed_pa, name = &quot;records&quot;)
-knitr::kable(event_dictionary)</code></pre>
-<table>
-<thead>
-<tr class="header">
-<th align="left">event_source</th>
-<th align="left">event</th>
-<th align="left">completed_pa</th>
-<th align="right">records</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="left">Bunt Groundout</td>
-<td align="left">field_out</td>
-<td align="left">TRUE</td>
-<td align="right">25</td>
-</tr>
-<tr class="even">
-<td align="left">Bunt Lineout</td>
-<td align="left">field_out</td>
-<td align="left">TRUE</td>
-<td align="right">1</td>
-</tr>
-<tr class="odd">
-<td align="left">Bunt Pop Out</td>
-<td align="left">field_out</td>
-<td align="left">TRUE</td>
-<td align="right">15</td>
-</tr>
-<tr class="even">
-<td align="left">Catcher Interference</td>
-<td align="left">catcher_interf</td>
-<td align="left">TRUE</td>
-<td align="right">10</td>
-</tr>
-<tr class="odd">
-<td align="left">Double</td>
-<td align="left">double</td>
-<td align="left">TRUE</td>
-<td align="right">1256</td>
-</tr>
-<tr class="even">
-<td align="left">Double Play</td>
-<td align="left">double_play</td>
-<td align="left">TRUE</td>
-<td align="right">55</td>
-</tr>
-<tr class="odd">
-<td align="left">Field Error</td>
-<td align="left">field_error</td>
-<td align="left">TRUE</td>
-<td align="right">181</td>
-</tr>
-<tr class="even">
-<td align="left">Fielders Choice</td>
-<td align="left">fielders_choice</td>
-<td align="left">TRUE</td>
-<td align="right">60</td>
-</tr>
-<tr class="odd">
-<td align="left">Fielders Choice Out</td>
-<td align="left">fielders_choice_out</td>
-<td align="left">TRUE</td>
-<td align="right">37</td>
-</tr>
-<tr class="even">
-<td align="left">Flyout</td>
-<td align="left">field_out</td>
-<td align="left">TRUE</td>
-<td align="right">4056</td>
-</tr>
-<tr class="odd">
-<td align="left">Forceout</td>
-<td align="left">force_out</td>
-<td align="left">TRUE</td>
-<td align="right">580</td>
-</tr>
-<tr class="even">
-<td align="left">Grounded Into DP</td>
-<td align="left">grounded_into_double_play</td>
-<td align="left">TRUE</td>
-<td align="right">556</td>
-</tr>
-<tr class="odd">
-<td align="left">Groundout</td>
-<td align="left">field_out</td>
-<td align="left">TRUE</td>
-<td align="right">4971</td>
-</tr>
-<tr class="even">
-<td align="left">Hit By Pitch</td>
-<td align="left">hit_by_pitch</td>
-<td align="left">TRUE</td>
-<td align="right">399</td>
-</tr>
-<tr class="odd">
-<td align="left">Home Run</td>
-<td align="left">home_run</td>
-<td align="left">TRUE</td>
-<td align="right">917</td>
-</tr>
-<tr class="even">
-<td align="left">Intent Walk</td>
-<td align="left">intent_walk</td>
-<td align="left">TRUE</td>
-<td align="right">76</td>
-</tr>
-<tr class="odd">
-<td align="left">Lineout</td>
-<td align="left">field_out</td>
-<td align="left">TRUE</td>
-<td align="right">1737</td>
-</tr>
-<tr class="even">
-<td align="left">Pop Out</td>
-<td align="left">field_out</td>
-<td align="left">TRUE</td>
-<td align="right">1421</td>
-</tr>
-<tr class="odd">
-<td align="left">Runner Out</td>
-<td align="left">runner_out</td>
-<td align="left">FALSE</td>
-<td align="right">2</td>
-</tr>
-<tr class="even">
-<td align="left">Sac Bunt</td>
-<td align="left">sac_bunt</td>
-<td align="left">TRUE</td>
-<td align="right">104</td>
-</tr>
-<tr class="odd">
-<td align="left">Sac Fly</td>
-<td align="left">sac_fly</td>
-<td align="left">TRUE</td>
-<td align="right">215</td>
-</tr>
-<tr class="even">
-<td align="left">Sac Fly Double Play</td>
-<td align="left">sac_fly_double_play</td>
-<td align="left">TRUE</td>
-<td align="right">2</td>
-</tr>
-<tr class="odd">
-<td align="left">Single</td>
-<td align="left">single</td>
-<td align="left">TRUE</td>
-<td align="right">4360</td>
-</tr>
-<tr class="even">
-<td align="left">Strikeout</td>
-<td align="left">strikeout</td>
-<td align="left">TRUE</td>
-<td align="right">6724</td>
-</tr>
-<tr class="odd">
-<td align="left">Strikeout Double Play</td>
-<td align="left">strikeout_double_play</td>
-<td align="left">TRUE</td>
-<td align="right">15</td>
-</tr>
-<tr class="even">
-<td align="left">Triple</td>
-<td align="left">triple</td>
-<td align="left">TRUE</td>
-<td align="right">100</td>
-</tr>
-<tr class="odd">
-<td align="left">Walk</td>
-<td align="left">walk</td>
-<td align="left">TRUE</td>
-<td align="right">2638</td>
-</tr>
-<tr class="even">
-<td align="left">catcher_interf</td>
-<td align="left">catcher_interf</td>
-<td align="left">TRUE</td>
-<td align="right">57</td>
-</tr>
-<tr class="odd">
-<td align="left">caught_stealing_2b</td>
-<td align="left">caught_stealing_2b</td>
-<td align="left">FALSE</td>
-<td align="right">116</td>
-</tr>
-<tr class="even">
-<td align="left">caught_stealing_3b</td>
-<td align="left">caught_stealing_3b</td>
-<td align="left">FALSE</td>
-<td align="right">9</td>
-</tr>
-<tr class="odd">
-<td align="left">caught_stealing_home</td>
-<td align="left">caught_stealing_home</td>
-<td align="left">FALSE</td>
-<td align="right">13</td>
-</tr>
-<tr class="even">
-<td align="left">double</td>
-<td align="left">double</td>
-<td align="left">TRUE</td>
-<td align="right">3842</td>
-</tr>
-<tr class="odd">
-<td align="left">double_play</td>
-<td align="left">double_play</td>
-<td align="left">TRUE</td>
-<td align="right">182</td>
-</tr>
-<tr class="even">
-<td align="left">field_error</td>
-<td align="left">field_error</td>
-<td align="left">TRUE</td>
-<td align="right">504</td>
-</tr>
-<tr class="odd">
-<td align="left">field_out</td>
-<td align="left">field_out</td>
-<td align="left">TRUE</td>
-<td align="right">36262</td>
-</tr>
-<tr class="even">
-<td align="left">fielders_choice</td>
-<td align="left">fielders_choice</td>
-<td align="left">TRUE</td>
-<td align="right">192</td>
-</tr>
-<tr class="odd">
-<td align="left">fielders_choice_out</td>
-<td align="left">fielders_choice_out</td>
-<td align="left">TRUE</td>
-<td align="right">135</td>
-</tr>
-<tr class="even">
-<td align="left">force_out</td>
-<td align="left">force_out</td>
-<td align="left">TRUE</td>
-<td align="right">1674</td>
-</tr>
-<tr class="odd">
-<td align="left">grounded_into_double_play</td>
-<td align="left">grounded_into_double_play</td>
-<td align="left">TRUE</td>
-<td align="right">1537</td>
-</tr>
-<tr class="even">
-<td align="left">hit_by_pitch</td>
-<td align="left">hit_by_pitch</td>
-<td align="left">TRUE</td>
-<td align="right">1046</td>
-</tr>
-<tr class="odd">
-<td align="left">home_run</td>
-<td align="left">home_run</td>
-<td align="left">TRUE</td>
-<td align="right">2955</td>
-</tr>
-<tr class="even">
-<td align="left">intent_walk</td>
-<td align="left">intent_walk</td>
-<td align="left">TRUE</td>
-<td align="right">218</td>
-</tr>
-<tr class="odd">
-<td align="left">other_out</td>
-<td align="left">other_out</td>
-<td align="left">FALSE</td>
-<td align="right">8</td>
-</tr>
-<tr class="even">
-<td align="left">pickoff_1b</td>
-<td align="left">pickoff_1b</td>
-<td align="left">FALSE</td>
-<td align="right">20</td>
-</tr>
-<tr class="odd">
-<td align="left">pickoff_2b</td>
-<td align="left">pickoff_2b</td>
-<td align="left">FALSE</td>
-<td align="right">4</td>
-</tr>
-<tr class="even">
-<td align="left">pickoff_3b</td>
-<td align="left">pickoff_3b</td>
-<td align="left">FALSE</td>
-<td align="right">1</td>
-</tr>
-<tr class="odd">
-<td align="left">pickoff_caught_stealing_2b</td>
-<td align="left">pickoff_caught_stealing_2b</td>
-<td align="left">FALSE</td>
-<td align="right">31</td>
-</tr>
-<tr class="even">
-<td align="left">pickoff_caught_stealing_3b</td>
-<td align="left">pickoff_caught_stealing_3b</td>
-<td align="left">FALSE</td>
-<td align="right">2</td>
-</tr>
-<tr class="odd">
-<td align="left">sac_bunt</td>
-<td align="left">sac_bunt</td>
-<td align="left">TRUE</td>
-<td align="right">181</td>
-</tr>
-<tr class="even">
-<td align="left">sac_fly</td>
-<td align="left">sac_fly</td>
-<td align="left">TRUE</td>
-<td align="right">660</td>
-</tr>
-<tr class="odd">
-<td align="left">sac_fly_double_play</td>
-<td align="left">sac_fly_double_play</td>
-<td align="left">TRUE</td>
-<td align="right">10</td>
-</tr>
-<tr class="even">
-<td align="left">single</td>
-<td align="left">single</td>
-<td align="left">TRUE</td>
-<td align="right">12657</td>
-</tr>
-<tr class="odd">
-<td align="left">stolen_base_2b</td>
-<td align="left">stolen_base_2b</td>
-<td align="left">FALSE</td>
-<td align="right">2</td>
-</tr>
-<tr class="even">
-<td align="left">strikeout</td>
-<td align="left">strikeout</td>
-<td align="left">TRUE</td>
-<td align="right">20665</td>
-</tr>
-<tr class="odd">
-<td align="left">strikeout_double_play</td>
-<td align="left">strikeout_double_play</td>
-<td align="left">TRUE</td>
-<td align="right">50</td>
-</tr>
-<tr class="even">
-<td align="left">triple</td>
-<td align="left">triple</td>
-<td align="left">TRUE</td>
-<td align="right">321</td>
-</tr>
-<tr class="odd">
-<td align="left">triple_play</td>
-<td align="left">triple_play</td>
-<td align="left">TRUE</td>
-<td align="right">2</td>
-</tr>
-<tr class="even">
-<td align="left">walk</td>
-<td align="left">walk</td>
-<td align="left">TRUE</td>
-<td align="right">7717</td>
-</tr>
-<tr class="odd">
-<td align="left">wild_pitch</td>
-<td align="left">wild_pitch</td>
-<td align="left">FALSE</td>
-<td align="right">2</td>
-</tr>
-</tbody>
-</table>
+         before_sub = end_outs == 3 &amp; (is.na(first_sub) | last_play &lt; first_sub)) %&gt;%
+  left_join(lineup_ok, by = &quot;lineup_id&quot;)</code></pre>
 </div>
-<div id="out-states-and-half-inning-structure" class="section level2" number="7.2">
-<h2 number="7.2"><span class="header-section-number">7.2</span> Out States and Half-Inning Structure</h2>
-<p>The previous record’s outs_after within the same half-inning provides a candidate value for the current record’s outs_before. A complete half-inning starts with zero outs, but completeness cannot be fully established from these files. Therefore, name the reconstructed field <code>outs_before_candidate</code> rather than treating it as verified. Missing base states remain NA. Half-innings ending with fewer than three outs may represent walk-off endings or incomplete records and require box-score verification.</p>
-<pre class="r"><code># Retain exact duplicates in the audit table; exclude duplicates and conflicting keys from candidates.
-pbp_candidate &lt;- pbp %&gt;% filter(!exact_duplicate, !conflicting_key, !metadata_invalid) %&gt;%
-  group_by(team, game_id, inning, inning_half) %&gt;% arrange(play_index, .by_group = TRUE) %&gt;%
-  mutate(outs_before_candidate = lag(outs_after, default = 0),
-         outs_candidate_basis = if_else(row_number() == 1L, &quot;assume_complete_half_inning_start&quot;, &quot;previous_record&quot;),
-         outs_added_candidate = outs_after - outs_before_candidate,
-         invalid_out_transition = outs_added_candidate &lt; 0 | outs_added_candidate &gt; 3,
-         supplied_outs_mismatch = !is.na(outs_before_source) &amp; outs_before_source != outs_before_candidate,
-         supplied_added_mismatch = !is.na(outs_added_source) &amp; outs_added_source != outs_added_candidate,
-         state_chain_invalid = any(invalid_outs | invalid_out_transition |
-                                     supplied_outs_mismatch | supplied_added_mismatch, na.rm = TRUE)) %&gt;% ungroup()
-valid_bases &lt;- c(&quot;Empty&quot;, &quot;1B&quot;, &quot;2B&quot;, &quot;3B&quot;, &quot;1B,2B&quot;, &quot;1B,3B&quot;, &quot;2B,3B&quot;, &quot;1B,2B,3B&quot;)
-pbp_candidate &lt;- pbp_candidate %&gt;% mutate(
-  bases_before_valid_or_missing = is.na(bases_before) | bases_before %in% valid_bases,
-  bases_after_valid_or_missing = is.na(bases_after) | bases_after %in% valid_bases)
-state_coverage &lt;- pbp_candidate %&gt;% group_by(season) %&gt;%
-  summarise(records = n(), missing_outs_before = sum(is.na(outs_before_source)),
-            missing_bases_before = sum(is.na(bases_before)), missing_bases_after = sum(is.na(bases_after)),
-            missing_outs_added = sum(is.na(outs_added_source)),
-            supplied_outs_mismatches = sum(supplied_outs_mismatch),
-            supplied_added_mismatches = sum(supplied_added_mismatch), .groups = &quot;drop&quot;)
-knitr::kable(state_coverage)</code></pre>
+<div id="data-checks" class="section level2" number="3.2">
+<h2 number="3.2"><span class="header-section-number">3.2</span> Data Checks</h2>
+<p>The Knit stops if any check fails.</p>
+<pre class="r"><code>matched &lt;- pbp %&gt;% inner_join(plays, by = c(&quot;team&quot;, &quot;game_id&quot;, &quot;play_index&quot;), suffix = c(&quot;&quot;, &quot;_official&quot;))
+pre_sub &lt;- plays %&gt;% filter(completed_pa %in% TRUE, is.na(first_sub) | play_index &lt; first_sub)
+lineup_check &lt;- starters %&gt;% group_by(team, game_id) %&gt;%
+  summarise(ok = n() == 9 &amp; n_distinct(batter_id) == 9 &amp; all(sort(slot) == 1:9), .groups = &quot;drop&quot;)
+rate_check &lt;- lineups %&gt;% filter(!is.na(ops), ab &gt; 0) %&gt;%
+  mutate(obp_calc = (h + bb + hbp) / (ab + bb + hbp + sf),
+         slg_calc = (h + doubles + 2 * triples + 3 * hr) / ab)
+
+data_checks &lt;- c(
+  &quot;Every workbook play is in the official feed&quot; = nrow(matched) == nrow(pbp),
+  &quot;Workbook and official batter agree on every play&quot; = all(matched$batter_id == matched$batter_id_official),
+  &quot;All games are final and played in 2025&quot; = all(games$state == &quot;Final&quot; &amp; format(games$date, &quot;%Y&quot;) == &quot;2025&quot;),
+  &quot;Every lineup has nine different starters in slots 1-9&quot; = all(lineup_check$ok),
+  &quot;Every substitute has a substitution event&quot; =
+    nrow(anti_join(filter(roster, entry &gt; 0), subs, by = c(&quot;team&quot;, &quot;game_id&quot;, &quot;batter_id&quot;))) == 0,
+  &quot;Every play is known to be a plate appearance or not&quot; = !anyNA(plays$completed_pa),
+  &quot;Half-inning runs match the official line score&quot; = all(halves$runs == halves$line_score_runs),
+  &quot;Batters come up in lineup order before the first substitution&quot; = all(pre_sub$batter_id == pre_sub$starter_id),
+  &quot;2024 OBP, SLG, and OPS match values recomputed from counts&quot; =
+    all(abs(rate_check$obp - rate_check$obp_calc) &lt; 0.0006 &amp; abs(rate_check$slg - rate_check$slg_calc) &lt; 0.0006 &amp;
+          abs(rate_check$ops - rate_check$obp - rate_check$slg) &lt; 0.0011))
+knitr::kable(data.frame(check = names(data_checks), passed = data_checks), row.names = FALSE)</code></pre>
 <table>
-<colgroup>
-<col width="4%" />
-<col width="5%" />
-<col width="13%" />
-<col width="14%" />
-<col width="13%" />
-<col width="13%" />
-<col width="17%" />
-<col width="17%" />
-</colgroup>
 <thead>
 <tr class="header">
-<th align="right">season</th>
-<th align="right">records</th>
-<th align="right">missing_outs_before</th>
-<th align="right">missing_bases_before</th>
-<th align="right">missing_bases_after</th>
-<th align="right">missing_outs_added</th>
-<th align="right">supplied_outs_mismatches</th>
-<th align="right">supplied_added_mismatches</th>
+<th align="left">check</th>
+<th align="left">passed</th>
 </tr>
 </thead>
 <tbody>
 <tr class="odd">
-<td align="right">2023</td>
-<td align="right">30697</td>
-<td align="right">30697</td>
-<td align="right">30697</td>
-<td align="right">30697</td>
-<td align="right">30697</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="even">
-<td align="right">2024</td>
-<td align="right">30203</td>
-<td align="right">30203</td>
-<td align="right">30203</td>
-<td align="right">30203</td>
-<td align="right">30203</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="odd">
-<td align="right">2025</td>
-<td align="right">30175</td>
-<td align="right">30175</td>
-<td align="right">30175</td>
-<td align="right">30175</td>
-<td align="right">30175</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="even">
-<td align="right">2026</td>
-<td align="right">30513</td>
-<td align="right">0</td>
-<td align="right">0</td>
-<td align="right">0</td>
-<td align="right">6180</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-</tbody>
-</table>
-</div>
-<div id="join-coverage-and-candidate-minigroup-summaries" class="section level2" number="7.3">
-<h2 number="7.3"><span class="header-section-number">7.3</span> Join Coverage and Candidate Minigroup Summaries</h2>
-<p>Join only unique validated statistical keys, not the original conflicting records. Half-inning runs are candidate sums of runs_scored and still require reconciliation with external game scores. Set every lineup_label to <code>not_classified</code>; successful preprocessing does not establish a Traditional or OPS classification.</p>
-<pre class="r"><code>pbp_joined &lt;- pbp_candidate %&gt;% left_join(
-  stats_valid %&gt;% select(team, season, batter_id, season_obp = obp, season_slg = slg, season_ops = ops),
-  by = c(&quot;team&quot;, &quot;season&quot;, &quot;batter_id&quot;)) %&gt;% mutate(has_validated_season_stats = !is.na(season_ops))
-stopifnot(nrow(pbp_joined) == nrow(pbp_candidate))
-join_coverage &lt;- pbp_joined %&gt;% group_by(team, season) %&gt;%
-  summarise(events = n(), matched = sum(has_validated_season_stats),
-            matched_fraction = mean(has_validated_season_stats), .groups = &quot;drop&quot;)
-unmatched_players &lt;- pbp_joined %&gt;% filter(!has_validated_season_stats) %&gt;%
-  count(team, season, batter_id, player, name = &quot;events&quot;) %&gt;% arrange(desc(events))
-minigroups &lt;- pbp_joined %&gt;% group_by(minigroup_id, team, season, game_id, date, inning, inning_half) %&gt;%
-  summarise(n_events = n(), n_known_completed_pa = sum(completed_pa %in% TRUE),
-            n_unknown_pa_events = sum(is.na(completed_pa)),
-            inning_runs_candidate = if (any(invalid_runs)) NA_real_ else sum(runs_scored),
-            end_outs = last(outs_after), first_play_index = first(play_index), last_play_index = last(play_index),
-            state_chain_invalid = any(state_chain_invalid),
-            all_observed_batters_have_stats = all(has_validated_season_stats), .groups = &quot;drop&quot;) %&gt;%
-  mutate(end_status = case_when(end_outs == 3 ~ &quot;three_outs_recorded&quot;,
-                               end_outs &lt; 3 ~ &quot;walkoff_or_incomplete_needs_verification&quot;, TRUE ~ &quot;invalid&quot;),
-         extra_innings = inning &gt; 9,
-         lineup_label = &quot;not_classified&quot;, eligible_primary_analysis = FALSE)
-knitr::kable(join_coverage, digits = 3)</code></pre>
-<table>
-<thead>
-<tr class="header">
-<th align="left">team</th>
-<th align="right">season</th>
-<th align="right">events</th>
-<th align="right">matched</th>
-<th align="right">matched_fraction</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="left">Angels</td>
-<td align="right">2023</td>
-<td align="right">6085</td>
-<td align="right">4184</td>
-<td align="right">0.688</td>
-</tr>
-<tr class="even">
-<td align="left">Angels</td>
-<td align="right">2024</td>
-<td align="right">5924</td>
-<td align="right">4427</td>
-<td align="right">0.747</td>
-</tr>
-<tr class="odd">
-<td align="left">Angels</td>
-<td align="right">2025</td>
-<td align="right">5929</td>
-<td align="right">4683</td>
-<td align="right">0.790</td>
-</tr>
-<tr class="even">
-<td align="left">Angels</td>
-<td align="right">2026</td>
-<td align="right">6010</td>
-<td align="right">4871</td>
-<td align="right">0.810</td>
-</tr>
-<tr class="odd">
-<td align="left">Cardinals</td>
-<td align="right">2023</td>
-<td align="right">6167</td>
-<td align="right">5255</td>
-<td align="right">0.852</td>
-</tr>
-<tr class="even">
-<td align="left">Cardinals</td>
-<td align="right">2024</td>
-<td align="right">6034</td>
-<td align="right">4746</td>
-<td align="right">0.787</td>
-</tr>
-<tr class="odd">
-<td align="left">Cardinals</td>
-<td align="right">2025</td>
-<td align="right">6000</td>
-<td align="right">5514</td>
-<td align="right">0.919</td>
-</tr>
-<tr class="even">
-<td align="left">Cardinals</td>
-<td align="right">2026</td>
-<td align="right">6049</td>
-<td align="right">4679</td>
-<td align="right">0.774</td>
-</tr>
-<tr class="odd">
-<td align="left">Cubs</td>
-<td align="right">2023</td>
-<td align="right">6167</td>
-<td align="right">4931</td>
-<td align="right">0.800</td>
-</tr>
-<tr class="even">
-<td align="left">Cubs</td>
-<td align="right">2024</td>
-<td align="right">6077</td>
-<td align="right">4878</td>
-<td align="right">0.803</td>
-</tr>
-<tr class="odd">
-<td align="left">Cubs</td>
-<td align="right">2025</td>
-<td align="right">6125</td>
-<td align="right">5461</td>
-<td align="right">0.892</td>
-</tr>
-<tr class="even">
-<td align="left">Cubs</td>
-<td align="right">2026</td>
-<td align="right">6290</td>
-<td align="right">5952</td>
-<td align="right">0.946</td>
-</tr>
-<tr class="odd">
-<td align="left">Dodgers</td>
-<td align="right">2023</td>
-<td align="right">6270</td>
-<td align="right">5460</td>
-<td align="right">0.871</td>
-</tr>
-<tr class="even">
-<td align="left">Dodgers</td>
-<td align="right">2024</td>
-<td align="right">6176</td>
-<td align="right">718</td>
-<td align="right">0.116</td>
-</tr>
-<tr class="odd">
-<td align="left">Dodgers</td>
-<td align="right">2025</td>
-<td align="right">6121</td>
-<td align="right">1741</td>
-<td align="right">0.284</td>
-</tr>
-<tr class="even">
-<td align="left">Dodgers</td>
-<td align="right">2026</td>
-<td align="right">6180</td>
-<td align="right">4669</td>
-<td align="right">0.756</td>
-</tr>
-<tr class="odd">
-<td align="left">Giants</td>
-<td align="right">2023</td>
-<td align="right">6008</td>
-<td align="right">4756</td>
-<td align="right">0.792</td>
-</tr>
-<tr class="even">
-<td align="left">Giants</td>
-<td align="right">2024</td>
-<td align="right">5992</td>
-<td align="right">2441</td>
-<td align="right">0.407</td>
-</tr>
-<tr class="odd">
-<td align="left">Giants</td>
-<td align="right">2025</td>
-<td align="right">6000</td>
-<td align="right">4573</td>
-<td align="right">0.762</td>
-</tr>
-<tr class="even">
-<td align="left">Giants</td>
-<td align="right">2026</td>
-<td align="right">5984</td>
-<td align="right">4252</td>
-<td align="right">0.711</td>
-</tr>
-</tbody>
-</table>
-<pre class="r"><code>knitr::kable(count(minigroups, end_status))</code></pre>
-<table>
-<thead>
-<tr class="header">
-<th align="left">end_status</th>
-<th align="right">n</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="left">three_outs_recorded</td>
-<td align="right">28320</td>
-</tr>
-<tr class="even">
-<td align="left">walkoff_or_incomplete_needs_verification</td>
-<td align="right">117</td>
-</tr>
-</tbody>
-</table>
-</div>
-</div>
-<div id="extended-preprocessing-coverage-denominators-and-historical-metrics" class="section level1" number="8">
-<h1 number="8"><span class="header-section-number">8</span> Extended Preprocessing: Coverage, Denominators, and Historical Metrics</h1>
-<p>This stage reconciles the three local datasets without treating agreement between potentially related sources as independent verification. All newly computed rates describe the events present in the supplied file, not necessarily complete official season totals. No source season labels are changed automatically.</p>
-<div id="observed-event-counts-and-rate-denominators" class="section level2" number="8.1">
-<h2 number="8.1"><span class="header-section-number">8.1</span> Observed Event Counts and Rate Denominators</h2>
-<p>Separate completed plate appearances from non-batting events and unknown events. Walks, hit-by-pitches, sacrifices, and catcher interference do not count as at-bats. A sacrifice-fly double play contributes one sacrifice fly. Unknown event types remain unresolved and prevent a player-season from being marked unambiguous. See the MLB definitions of <a href="https://www.mlb.com/glossary/standard-stats/at-bat">at-bats</a> and <a href="https://www.mlb.com/glossary/standard-stats/plate-appearance">plate appearances</a>.</p>
-<pre class="r"><code>count_fields &lt;- c(&quot;observed_pa&quot;, &quot;observed_ab&quot;, &quot;observed_h&quot;, &quot;observed_doubles&quot;, &quot;observed_triples&quot;,
-                  &quot;observed_hr&quot;, &quot;observed_bb&quot;, &quot;observed_hbp&quot;, &quot;observed_sf&quot;, &quot;observed_sh&quot;,
-                  &quot;observed_ci&quot;, &quot;observed_so&quot;, &quot;observed_tb&quot;, &quot;unknown_events&quot;)
-event_counts &lt;- pbp_joined %&gt;% mutate(
-  observed_pa = as.integer(completed_pa %in% TRUE),
-  observed_bb = as.integer(event %in% c(&quot;walk&quot;, &quot;intent_walk&quot;)),
-  observed_hbp = as.integer(event == &quot;hit_by_pitch&quot;),
-  observed_sf = as.integer(event %in% c(&quot;sac_fly&quot;, &quot;sac_fly_double_play&quot;)),
-  observed_sh = as.integer(event == &quot;sac_bunt&quot;), observed_ci = as.integer(event == &quot;catcher_interf&quot;),
-  observed_h = as.integer(event %in% c(&quot;single&quot;, &quot;double&quot;, &quot;triple&quot;, &quot;home_run&quot;)),
-  observed_doubles = as.integer(event == &quot;double&quot;), observed_triples = as.integer(event == &quot;triple&quot;),
-  observed_hr = as.integer(event == &quot;home_run&quot;),
-  observed_so = as.integer(event %in% c(&quot;strikeout&quot;, &quot;strikeout_double_play&quot;)),
-  observed_tb = case_when(event == &quot;single&quot; ~ 1L, event == &quot;double&quot; ~ 2L,
-                          event == &quot;triple&quot; ~ 3L, event == &quot;home_run&quot; ~ 4L, TRUE ~ 0L),
-  observed_ab = observed_pa - observed_bb - observed_hbp - observed_sf - observed_sh - observed_ci,
-  unknown_events = as.integer(is.na(completed_pa)))
-safe_rate &lt;- function(numerator, denominator) ifelse(denominator &gt; 0, numerator / denominator, NA_real_)
-observed_stats &lt;- event_counts %&gt;% group_by(team, season, batter_id) %&gt;%
-  summarise(player = first(player), first_observed_date = min(date), last_observed_date = max(date),
-            observed_games = n_distinct(game_id), across(all_of(count_fields), sum), .groups = &quot;drop&quot;) %&gt;%
-  mutate(observed_avg = safe_rate(observed_h, observed_ab),
-         observed_slg = safe_rate(observed_tb, observed_ab),
-         observed_obp = safe_rate(observed_h + observed_bb + observed_hbp,
-                                 observed_ab + observed_bb + observed_hbp + observed_sf),
-         observed_ops = observed_obp + observed_slg,
-         event_mapping_unambiguous = unknown_events == 0L,
-         coverage_status = &quot;supplied_events_only_not_official_season_totals&quot;)
-stopifnot(all(event_counts$observed_ab %in% 0:1),
-          all(observed_stats$observed_pa == with(observed_stats,
-            observed_ab + observed_bb + observed_hbp + observed_sf + observed_sh + observed_ci)))
-knitr::kable(observed_stats %&gt;% group_by(season) %&gt;% summarise(player_team_rows = n(),
-  observed_pa = sum(observed_pa), unknown_events = sum(unknown_events), .groups = &quot;drop&quot;))</code></pre>
-<table>
-<thead>
-<tr class="header">
-<th align="right">season</th>
-<th align="right">player_team_rows</th>
-<th align="right">observed_pa</th>
-<th align="right">unknown_events</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="right">2023</td>
-<td align="right">136</td>
-<td align="right">30631</td>
-<td align="right">0</td>
-</tr>
-<tr class="even">
-<td align="right">2024</td>
-<td align="right">124</td>
-<td align="right">30120</td>
-<td align="right">0</td>
-</tr>
-<tr class="odd">
-<td align="right">2025</td>
-<td align="right">123</td>
-<td align="right">30116</td>
-<td align="right">0</td>
-</tr>
-<tr class="even">
-<td align="right">2026</td>
-<td align="right">128</td>
-<td align="right">30511</td>
-<td align="right">0</td>
-</tr>
-</tbody>
-</table>
-</div>
-<div id="reconcile-player-statistics-and-probabilities" class="section level2" number="8.2">
-<h2 number="8.2"><span class="header-section-number">8.2</span> Reconcile Player Statistics and Probabilities</h2>
-<p>Compare source counts with the observed event totals. A match is local supporting evidence, not permission to change a season or copy a PA total. Report differences explicitly. Probability reconciliation uses the same seven categories and compares both PA and the category probabilities; unknown events are excluded from the known-PA denominator and separately flagged.</p>
-<pre class="r"><code>stats_reconciliation &lt;- stats %&gt;% left_join(observed_stats %&gt;% select(-player),
-                                            by = c(&quot;team&quot;, &quot;season&quot;, &quot;batter_id&quot;)) %&gt;%
-  mutate(pa_delta_observed = pa - observed_pa, ab_delta_observed = ab - observed_ab,
-         hits_delta_observed = h - observed_h, bb_delta_observed = bb - observed_bb,
-         so_delta_observed = so - observed_so,
-         count_fingerprint_matches = coalesce(ab == observed_ab &amp; h == observed_h &amp;
-           doubles == observed_doubles &amp; triples == observed_triples &amp; hr == observed_hr &amp;
-           bb == observed_bb &amp; so == observed_so &amp; unknown_events == 0, FALSE))
-event_buckets &lt;- event_counts %&gt;% filter(completed_pa %in% TRUE) %&gt;% mutate(bucket = case_when(
-  event == &quot;single&quot; ~ &quot;p_single&quot;, event == &quot;double&quot; ~ &quot;p_double&quot;, event == &quot;triple&quot; ~ &quot;p_triple&quot;,
-  event == &quot;home_run&quot; ~ &quot;p_home_run&quot;, event %in% c(&quot;walk&quot;, &quot;intent_walk&quot;, &quot;hit_by_pitch&quot;) ~ &quot;p_walk_hbp&quot;,
-  event %in% c(&quot;field_error&quot;, &quot;catcher_interf&quot;) ~ &quot;p_error_interference&quot;, TRUE ~ &quot;p_out&quot;)) %&gt;%
-  count(team, season, batter_id, bucket, name = &quot;observed_count&quot;)
-prob_reconciliation &lt;- probs %&gt;% select(team, season, batter_id, pa, all_of(pcols)) %&gt;%
-  pivot_longer(all_of(pcols), names_to = &quot;bucket&quot;, values_to = &quot;source_probability&quot;) %&gt;%
-  left_join(observed_stats %&gt;% select(team, season, batter_id, observed_pa, unknown_events),
-            by = c(&quot;team&quot;, &quot;season&quot;, &quot;batter_id&quot;)) %&gt;%
-  left_join(event_buckets, by = c(&quot;team&quot;, &quot;season&quot;, &quot;batter_id&quot;, &quot;bucket&quot;)) %&gt;%
-  mutate(observed_count = if_else(!is.na(observed_pa), coalesce(observed_count, 0L), NA_integer_),
-         observed_probability = safe_rate(observed_count, observed_pa),
-         probability_delta = source_probability - observed_probability,
-         pa_delta = pa - observed_pa)
-prob_reconciliation_summary &lt;- prob_reconciliation %&gt;% group_by(team, season, batter_id) %&gt;%
-  summarise(pa_delta = first(pa_delta), unknown_events = first(unknown_events),
-            max_absolute_probability_delta = if (any(is.na(probability_delta))) NA_real_
-              else max(abs(probability_delta)), .groups = &quot;drop&quot;) %&gt;%
-  mutate(matches_observed_events = coalesce(pa_delta == 0 &amp; unknown_events == 0 &amp;
-           max_absolute_probability_delta &lt; 1e-8, FALSE))
-probs &lt;- probs %&gt;% left_join(prob_reconciliation_summary, by = c(&quot;team&quot;, &quot;season&quot;, &quot;batter_id&quot;))
-event_denominators &lt;- event_counts %&gt;% count(team, season, batter_id, name = &quot;all_event_records&quot;)
-probs &lt;- probs %&gt;% left_join(event_denominators, by = c(&quot;team&quot;, &quot;season&quot;, &quot;batter_id&quot;)) %&gt;%
-  mutate(source_pa_equals_all_event_records = pa == all_event_records,
-         passes_completed_pa_reconciliation = eligible_probability_vector &amp; matches_observed_events)
-# Reconstruct a separate seven-category vector with completed PA as the denominator.
-# Do not overwrite source probabilities or claim that these are complete-season estimates.
-probabilities_observed &lt;- event_buckets %&gt;%
-  pivot_wider(names_from = bucket, values_from = observed_count, values_fill = 0) %&gt;%
-  left_join(observed_stats %&gt;% select(team, season, batter_id, observed_pa, unknown_events,
-                                     observed_slg, observed_obp, observed_ops),
-            by = c(&quot;team&quot;, &quot;season&quot;, &quot;batter_id&quot;)) %&gt;%
-  mutate(across(all_of(pcols), ~safe_rate(.x, observed_pa)),
-         probability_sum = rowSums(pick(all_of(pcols))),
-         eligible_observed_vector = observed_pa &gt; 0 &amp; unknown_events == 0,
-         coverage_status = &quot;completed_PA_in_supplied_events_only&quot;,
-         timing = &quot;full_observed_season_not_pregame&quot;)
-stopifnot(all(abs(probabilities_observed$probability_sum - 1) &lt; 1e-8),
-          !anyDuplicated(probabilities_observed[c(&quot;team&quot;, &quot;season&quot;, &quot;batter_id&quot;)]))
-# Candidate cross-season evidence: retain all exact matches, never silently relabel a source row.
-fingerprint_candidates &lt;- stats %&gt;% select(source_row, team, source_season = season, player, player_key,
-  ab, h, doubles, triples, hr, bb, so) %&gt;% inner_join(
-    observed_stats %&gt;% mutate(player_key = name_key(player)) %&gt;%
-      filter(event_mapping_unambiguous) %&gt;% select(team, candidate_season = season, player_key, batter_id,
-        ab = observed_ab, h = observed_h, doubles = observed_doubles, triples = observed_triples,
-        hr = observed_hr, bb = observed_bb, so = observed_so),
-    by = c(&quot;team&quot;, &quot;player_key&quot;, &quot;ab&quot;, &quot;h&quot;, &quot;doubles&quot;, &quot;triples&quot;, &quot;hr&quot;, &quot;bb&quot;, &quot;so&quot;),
-    relationship = &quot;many-to-many&quot;) %&gt;% mutate(season_agrees = source_season == candidate_season,
-      disposition = &quot;supporting_evidence_only_source_confirmation_required&quot;)
-knitr::kable(probs %&gt;% count(season, matches_observed_events))</code></pre>
-<table>
-<thead>
-<tr class="header">
-<th align="right">season</th>
-<th align="left">matches_observed_events</th>
-<th align="right">n</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="right">2023</td>
-<td align="left">FALSE</td>
-<td align="right">42</td>
-</tr>
-<tr class="even">
-<td align="right">2023</td>
+<td align="left">Every workbook play is in the official feed</td>
 <td align="left">TRUE</td>
-<td align="right">94</td>
-</tr>
-<tr class="odd">
-<td align="right">2024</td>
-<td align="left">FALSE</td>
-<td align="right">52</td>
 </tr>
 <tr class="even">
-<td align="right">2024</td>
+<td align="left">Workbook and official batter agree on every play</td>
 <td align="left">TRUE</td>
-<td align="right">72</td>
 </tr>
 <tr class="odd">
-<td align="right">2025</td>
-<td align="left">FALSE</td>
-<td align="right">36</td>
-</tr>
-<tr class="even">
-<td align="right">2025</td>
+<td align="left">All games are final and played in 2025</td>
 <td align="left">TRUE</td>
-<td align="right">87</td>
-</tr>
-<tr class="odd">
-<td align="right">2026</td>
-<td align="left">FALSE</td>
-<td align="right">126</td>
 </tr>
 <tr class="even">
-<td align="right">2026</td>
+<td align="left">Every lineup has nine different starters in slots 1-9</td>
 <td align="left">TRUE</td>
-<td align="right">2</td>
-</tr>
-</tbody>
-</table>
-<pre class="r"><code>knitr::kable(fingerprint_candidates %&gt;% filter(!season_agrees) %&gt;%
-              select(source_row, player, source_season, candidate_season, disposition))</code></pre>
-<table>
-<thead>
-<tr class="header">
-<th align="right">source_row</th>
-<th align="left">player</th>
-<th align="right">source_season</th>
-<th align="right">candidate_season</th>
-<th align="left">disposition</th>
-</tr>
-</thead>
-<tbody>
-</tbody>
-</table>
-<p>In this run, 511 of 511 source PA values equal all event-row counts. Only 255 source vectors pass completed-PA reconciliation. The separate <code>player_probabilities_observed</code> table uses completed plate appearances; vectors affected by unknown events remain ineligible. Neither version is a pregame estimate.</p>
-</div>
-<div id="prior-day-player-metrics-without-same-day-leakage" class="section level2" number="8.3">
-<h2 number="8.3"><span class="header-section-number">8.3</span> Prior-Day Player Metrics Without Same-Day Leakage</h2>
-<p>Aggregate by batter, season, and calendar date before applying a cumulative lag. Exclude every event on the current date, including both games of a doubleheader. Combine the player’s observed history across the five supplied teams, but do not imply coverage of other teams. Reset at each season; opening-day values remain unavailable. The 150-PA flag in this exploratory table is retained for audit only. It does not control the primary sample, which uses the confirmed 100-PA threshold on previous-season official statistics. Prior unknown events also block this exploratory flag.</p>
-<pre class="r"><code>daily_counts &lt;- event_counts %&gt;% group_by(batter_id, season, date) %&gt;%
-  summarise(across(all_of(count_fields), sum), .groups = &quot;drop&quot;) %&gt;%
-  arrange(batter_id, season, date) %&gt;% group_by(batter_id, season) %&gt;%
-  mutate(across(all_of(count_fields), ~lag(cumsum(.x), default = 0), .names = &quot;prior_{.col}&quot;),
-         stats_through_date = lag(date)) %&gt;% ungroup()
-pregame_metrics &lt;- daily_counts %&gt;% select(batter_id, season, date, stats_through_date, starts_with(&quot;prior_&quot;)) %&gt;%
-  mutate(prior_obp = safe_rate(prior_observed_h + prior_observed_bb + prior_observed_hbp,
-         prior_observed_ab + prior_observed_bb + prior_observed_hbp + prior_observed_sf),
-         prior_slg = safe_rate(prior_observed_tb, prior_observed_ab), prior_ops = prior_obp + prior_slg,
-         meets_provisional_pa_threshold = prior_observed_pa &gt;= 150 &amp; prior_unknown_events == 0,
-         coverage_status = &quot;prior_days_in_supplied_five_team_data_only&quot;)
-stopifnot(!anyDuplicated(pregame_metrics[c(&quot;batter_id&quot;, &quot;season&quot;, &quot;date&quot;)]),
-          all(is.na(pregame_metrics$stats_through_date) | pregame_metrics$stats_through_date &lt; pregame_metrics$date))
-first_days &lt;- pregame_metrics %&gt;% group_by(batter_id, season) %&gt;% slice_min(date, n = 1) %&gt;% ungroup()
-stopifnot(all(first_days$prior_observed_pa == 0), all(is.na(first_days$prior_ops)))
-# Independently reconcile the cumulative endpoint against the complete daily totals.
-endpoint_check &lt;- daily_counts %&gt;% group_by(batter_id, season) %&gt;% summarise(
-  total_pa = sum(observed_pa), endpoint_pa = last(prior_observed_pa) + last(observed_pa), .groups = &quot;drop&quot;)
-stopifnot(all(endpoint_check$total_pa == endpoint_check$endpoint_pa))
-pbp_joined &lt;- pbp_joined %&gt;% left_join(pregame_metrics,
-                                      by = c(&quot;batter_id&quot;, &quot;season&quot;, &quot;date&quot;))
-stopifnot(nrow(pbp_joined) == nrow(pbp_candidate))
-knitr::kable(pregame_metrics %&gt;% group_by(season) %&gt;% summarise(player_dates = n(),
-  dates_with_150_prior_pa = sum(meets_provisional_pa_threshold), .groups = &quot;drop&quot;))</code></pre>
-<table>
-<thead>
-<tr class="header">
-<th align="right">season</th>
-<th align="right">player_dates</th>
-<th align="right">dates_with_150_prior_pa</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="right">2023</td>
-<td align="right">8158</td>
-<td align="right">4281</td>
-</tr>
-<tr class="even">
-<td align="right">2024</td>
-<td align="right">8025</td>
-<td align="right">4194</td>
 </tr>
 <tr class="odd">
-<td align="right">2025</td>
-<td align="right">7922</td>
-<td align="right">4494</td>
-</tr>
-<tr class="even">
-<td align="right">2026</td>
-<td align="right">8144</td>
-<td align="right">4271</td>
-</tr>
-</tbody>
-</table>
-</div>
-<div id="game-coverage-and-remaining-readiness-gates" class="section level2" number="8.4">
-<h2 number="8.4"><span class="header-section-number">8.4</span> Game Coverage and Remaining Readiness Gates</h2>
-<p>Internal checks can identify missing inning numbers or inconsistent metadata but cannot prove that all games, extra innings, plays, or substitutions were supplied. Games ending before nine offensive half-innings may be legitimate. Keep these checks as review flags rather than automatic exclusions. External game-score verification and batting-order reconstruction remain separate requirements.</p>
-<pre class="r"><code>game_coverage &lt;- pbp_joined %&gt;% group_by(team, season, game_id) %&gt;% summarise(
-  dates = n_distinct(date), batting_halves = n_distinct(inning_half),
-  first_inning = min(inning), last_inning = max(inning), observed_half_innings = n_distinct(inning),
-  consecutive_innings_from_one = identical(sort(unique(inning)), seq_len(max(inning))),
-  unknown_pa_events = sum(is.na(completed_pa)),
-  runs_candidate = if (any(invalid_runs)) NA_real_ else sum(runs_scored),
-  .groups = &quot;drop&quot;)
-minigroup_readiness &lt;- pbp_joined %&gt;% group_by(minigroup_id) %&gt;% summarise(
-  all_observed_batters_have_prior_metrics = all(!is.na(prior_ops)),
-  all_observed_batters_meet_pa_threshold = all(meets_provisional_pa_threshold), .groups = &quot;drop&quot;)
-minigroups &lt;- minigroups %&gt;% left_join(minigroup_readiness, by = &quot;minigroup_id&quot;)
-local_only_readiness &lt;- tibble(
-  requirement = c(&quot;Typed import and lossless joins&quot;, &quot;Observed event count reconciliation&quot;,
-                  &quot;Prior-day metrics without same-day outcomes&quot;, &quot;Complete source season statistics&quot;,
-                  &quot;Official game-score reconciliation&quot;, &quot;Starting order and substitutions&quot;),
-  status = c(&quot;implemented_and_checked&quot;, &quot;implemented_differences_retained&quot;, &quot;implemented_with_coverage_limits&quot;,
-             &quot;unresolved_source_conflicts_and_gaps&quot;, &quot;requires_external_verification&quot;, &quot;not_yet_reconstructed&quot;))
-knitr::kable(game_coverage %&gt;% group_by(season) %&gt;% summarise(team_games = n(),
-  games_with_extra_innings_in_file = sum(last_inning &gt; 9),
-  games_with_inning_gaps = sum(!consecutive_innings_from_one), .groups = &quot;drop&quot;))</code></pre>
-<table>
-<thead>
-<tr class="header">
-<th align="right">season</th>
-<th align="right">team_games</th>
-<th align="right">games_with_extra_innings_in_file</th>
-<th align="right">games_with_inning_gaps</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="right">2023</td>
-<td align="right">810</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="even">
-<td align="right">2024</td>
-<td align="right">810</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="odd">
-<td align="right">2025</td>
-<td align="right">810</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="even">
-<td align="right">2026</td>
-<td align="right">810</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-</tbody>
-</table>
-<pre class="r"><code>knitr::kable(local_only_readiness)</code></pre>
-<table>
-<colgroup>
-<col width="54%" />
-<col width="45%" />
-</colgroup>
-<thead>
-<tr class="header">
-<th align="left">requirement</th>
-<th align="left">status</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="left">Typed import and lossless joins</td>
-<td align="left">implemented_and_checked</td>
-</tr>
-<tr class="even">
-<td align="left">Observed event count reconciliation</td>
-<td align="left">implemented_differences_retained</td>
-</tr>
-<tr class="odd">
-<td align="left">Prior-day metrics without same-day outcomes</td>
-<td align="left">implemented_with_coverage_limits</td>
-</tr>
-<tr class="even">
-<td align="left">Complete source season statistics</td>
-<td align="left">unresolved_source_conflicts_and_gaps</td>
-</tr>
-<tr class="odd">
-<td align="left">Official game-score reconciliation</td>
-<td align="left">requires_external_verification</td>
-</tr>
-<tr class="even">
-<td align="left">Starting order and substitutions</td>
-<td align="left">not_yet_reconstructed</td>
-</tr>
-</tbody>
-</table>
-<p>The supplied file contains 0 team-games with an observed inning beyond nine. This is a coverage warning, not evidence that no real games went to extra innings. Source conflicts and missing coverage remain unresolved rather than being filled with observed partial-season totals.</p>
-</div>
-</div>
-<div id="verified-inputs-for-future-minigroup-classification" class="section level1" number="9">
-<h1 number="9"><span class="header-section-number">9</span> Verified Inputs for Future Minigroup Classification</h1>
-<p>This section prepares evidence and candidate inputs only. Previous-season metrics cover all MLB teams for each player ID. They avoid the five-team coverage restriction of the earlier exploratory prior-day table. Source workbook records remain available for audit; the official supplementary table is used for the new preparation layer with the user’s approval.</p>
-<div id="source-corrections-and-official-names" class="section level2" number="9.1">
-<h2 number="9.1"><span class="header-section-number">9.1</span> Source Corrections and Official Names</h2>
-<p>Compare each source row with official same-team, same-season counts. For unmatched IDs, accept only a unique normalized-name match within that team and season. Do not guess a different year. Preserve both versions and a correction status.</p>
-<pre class="r"><code>official_name_keys &lt;- official_team_stats %&gt;% mutate(player_key = name_key(official_name)) %&gt;%
-  group_by(team, season, player_key) %&gt;% filter(n() == 1L) %&gt;% ungroup() %&gt;%
-  select(team, season, player_key, name_matched_id = batter_id)
-official_stat_comparison &lt;- stats %&gt;% left_join(official_name_keys, by = c(&quot;team&quot;, &quot;season&quot;, &quot;player_key&quot;)) %&gt;%
-  mutate(verified_join_id = coalesce(batter_id, name_matched_id)) %&gt;%
-  left_join(official_team_stats, by = c(&quot;team&quot;, &quot;season&quot;, &quot;verified_join_id&quot; = &quot;batter_id&quot;)) %&gt;%
-  mutate(official_match_available = !is.na(official_pa),
-    source_count_difference = coalesce(pa != official_pa | ab != official_ab | h != official_h |
-      doubles != official_doubles | triples != official_triples | hr != official_hr | bb != official_bb |
-      so != official_so, TRUE),
-    correction_status = case_when(!official_match_available ~ &quot;no_same_team_season_official_match&quot;,
-      source_count_difference | conflicting_key ~ &quot;use_official_record_preserve_source_for_audit&quot;,
-      TRUE ~ &quot;source_counts_agree_with_official&quot;))
-stopifnot(nrow(official_stat_comparison) == nrow(stats))
-official_identity_issues &lt;- official_stat_comparison %&gt;% filter(!official_match_available)
-knitr::kable(count(official_stat_comparison, correction_status))</code></pre>
-<table>
-<thead>
-<tr class="header">
-<th align="left">correction_status</th>
-<th align="right">n</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="left">no_same_team_season_official_match</td>
-<td align="right">2</td>
-</tr>
-<tr class="even">
-<td align="left">source_counts_agree_with_official</td>
-<td align="right">191</td>
-</tr>
-<tr class="odd">
-<td align="left">use_official_record_preserve_source_for_audit</td>
-<td align="right">19</td>
-</tr>
-</tbody>
-</table>
-<pre class="r"><code>knitr::kable(official_identity_issues %&gt;% select(source_row, team, season, player, correction_status))</code></pre>
-<table>
-<thead>
-<tr class="header">
-<th align="right">source_row</th>
-<th align="left">team</th>
-<th align="right">season</th>
-<th align="left">player</th>
-<th align="left">correction_status</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="right">119</td>
-<td align="left">Dodgers</td>
-<td align="right">2025</td>
-<td align="left">Gavin Lux</td>
-<td align="left">no_same_team_season_official_match</td>
-</tr>
-<tr class="even">
-<td align="right">120</td>
-<td align="left">Dodgers</td>
-<td align="right">2025</td>
-<td align="left">Jason Heyward</td>
-<td align="left">no_same_team_season_official_match</td>
-</tr>
-</tbody>
-</table>
-</div>
-<div id="official-lineup-substitution-and-score-verification" class="section level2" number="9.2">
-<h2 number="9.2"><span class="header-section-number">9.2</span> Official Lineup, Substitution, and Score Verification</h2>
-<p>Initial batting-order codes end in 00; later entries have positive entry sequences. Require exactly nine distinct initial players occupying slots 1 through 9. Do not use the final battingOrder array as the starting lineup. Check official substitutions against replacement players in the box score, including pinch runners and defensive substitutions that change the batting roster.</p>
-<pre class="r"><code>starter_checks &lt;- official_starters %&gt;% group_by(team, game_id) %&gt;% summarise(
-  official_starters_valid = n() == 9L &amp; n_distinct(batter_id) == 9L &amp;
-    identical(sort(slot), 1:9), .groups = &quot;drop&quot;)
-substitute_presence &lt;- official_batting_roster %&gt;% filter(entry_sequence &gt; 0L) %&gt;%
-  distinct(team, game_id, batter_id) %&gt;% left_join(
-    official_substitutions %&gt;% distinct(team, game_id, substitute_id) %&gt;% mutate(action_found = TRUE),
-    by = c(&quot;team&quot;, &quot;game_id&quot;, &quot;batter_id&quot; = &quot;substitute_id&quot;))
-substitution_checks &lt;- substitute_presence %&gt;% group_by(team, game_id) %&gt;%
-  summarise(unlocated_substitutes = sum(is.na(action_found)), .groups = &quot;drop&quot;)
-first_substitutions &lt;- official_substitutions %&gt;% group_by(team, game_id) %&gt;%
-  summarise(first_substitution_play_index = min(substitution_play_index), .groups = &quot;drop&quot;)
-game_verification &lt;- pbp_joined %&gt;% group_by(team, season, game_id) %&gt;% summarise(
-  official_game_identity_verified = all(official_game_identity_verified),
-  observed_play_identities_verified = all(official_play_identity_verified), .groups = &quot;drop&quot;) %&gt;%
-  left_join(starter_checks, by = c(&quot;team&quot;, &quot;game_id&quot;)) %&gt;%
-  left_join(substitution_checks, by = c(&quot;team&quot;, &quot;game_id&quot;)) %&gt;%
-  left_join(first_substitutions, by = c(&quot;team&quot;, &quot;game_id&quot;)) %&gt;%
-  mutate(unlocated_substitutes = coalesce(unlocated_substitutes, 0L))
-lineup_inputs &lt;- official_starters %&gt;% left_join(game_verification, by = c(&quot;team&quot;, &quot;game_id&quot;)) %&gt;%
-  mutate(metric_season = season - 1L) %&gt;% left_join(
-    official_previous_seasons %&gt;% select(-team) %&gt;% rename(metric_season = season,
-      metric_name = official_name, metric_source_url = source_url, metric_retrieved_at = retrieved_at_utc),
-    by = c(&quot;metric_season&quot;, &quot;batter_id&quot;)) %&gt;%
-  mutate(previous_season_metrics_available = !is.na(official_obp) &amp; !is.na(official_slg) &amp; !is.na(official_ops) &amp;
-           !is.na(official_ab) &amp; official_ab &gt; 0 &amp; !is.na(official_pa) &amp; official_pa &gt; 0,
-         metrics_precede_game_season = metric_season &lt; season)
-lineup_metric_coverage &lt;- lineup_inputs %&gt;% group_by(team, season, game_id) %&gt;% summarise(
-  n_missing_previous_season_metrics = sum(!previous_season_metrics_available),
-  n_previous_pa_below_150 = sum(is.na(official_pa) | official_pa &lt; 150),
-  minimum_previous_pa = if (any(is.na(official_pa))) NA_real_ else min(official_pa), .groups = &quot;drop&quot;)
-half_verification &lt;- pbp_joined %&gt;% group_by(minigroup_id) %&gt;% summarise(
-  all_play_identities_verified = all(official_play_identity_verified),
-  known_pa_events_only = all(!is.na(completed_pa)), .groups = &quot;drop&quot;)
-minigroups &lt;- minigroups %&gt;% left_join(official_half_scores, by = c(&quot;team&quot;, &quot;game_id&quot;, &quot;inning&quot;, &quot;inning_half&quot;)) %&gt;%
-  left_join(game_verification, by = c(&quot;team&quot;, &quot;season&quot;, &quot;game_id&quot;)) %&gt;%
-  left_join(lineup_metric_coverage, by = c(&quot;team&quot;, &quot;season&quot;, &quot;game_id&quot;)) %&gt;%
-  left_join(half_verification, by = &quot;minigroup_id&quot;) %&gt;% mutate(
-    inning_runs_match_official = coalesce(inning_runs_candidate == official_inning_runs, FALSE),
-    before_first_roster_substitution = unlocated_substitutes == 0L &amp;
-      (is.na(first_substitution_play_index) | last_play_index &lt; first_substitution_play_index),
-    complete_before_substitution = before_first_roster_substitution &amp; end_outs == 3,
-    technical_inputs_verified = coalesce(official_game_identity_verified &amp; official_starters_valid &amp;
-      all_play_identities_verified &amp; known_pa_events_only &amp; inning_runs_match_official &amp; !state_chain_invalid, FALSE),
-    classification_input_status = &quot;source_audit_layer_not_primary_sample&quot;,
-    lineup_label = &quot;not_classified&quot;, eligible_primary_analysis = FALSE)
-threshold_impact &lt;- bind_rows(lapply(c(0L, 50L, 100L, 150L), function(threshold) {
-  passes &lt;- lineup_inputs %&gt;% group_by(team, game_id) %&gt;% summarise(
-    all_nine_pass = n() == 9L &amp; all(previous_season_metrics_available &amp; official_pa &gt;= threshold), .groups = &quot;drop&quot;)
-  candidate &lt;- minigroups %&gt;% left_join(passes, by = c(&quot;team&quot;, &quot;game_id&quot;)) %&gt;%
-    filter(technical_inputs_verified, complete_before_substitution, all_nine_pass)
-  tibble(minimum_previous_season_pa = threshold, eligible_half_innings_if_selected = nrow(candidate),
-         eligible_team_games_if_selected = n_distinct(paste(candidate$team, candidate$game_id)))
-}))
-official_missing_halves &lt;- anti_join(official_half_scores, minigroups,
-                                    by = c(&quot;team&quot;, &quot;game_id&quot;, &quot;inning&quot;, &quot;inning_half&quot;))
-stopifnot(nrow(minigroups) == n_distinct(pbp_joined$minigroup_id),
-          !anyDuplicated(lineup_inputs[c(&quot;team&quot;, &quot;game_id&quot;, &quot;slot&quot;)]),
-          all(lineup_inputs$metrics_precede_game_season))
-knitr::kable(threshold_impact)</code></pre>
-<table>
-<colgroup>
-<col width="29%" />
-<col width="36%" />
-<col width="34%" />
-</colgroup>
-<thead>
-<tr class="header">
-<th align="right">minimum_previous_season_pa</th>
-<th align="right">eligible_half_innings_if_selected</th>
-<th align="right">eligible_team_games_if_selected</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="right">0</td>
-<td align="right">9327</td>
-<td align="right">1347</td>
-</tr>
-<tr class="even">
-<td align="right">50</td>
-<td align="right">5948</td>
-<td align="right">846</td>
-</tr>
-<tr class="odd">
-<td align="right">100</td>
-<td align="right">3330</td>
-<td align="right">467</td>
-</tr>
-<tr class="even">
-<td align="right">150</td>
-<td align="right">2442</td>
-<td align="right">338</td>
-</tr>
-</tbody>
-</table>
-<pre class="r"><code>knitr::kable(minigroups %&gt;% summarise(half_innings = n(),
-  technical_inputs_verified = sum(technical_inputs_verified),
-  verified_complete_before_substitution = sum(technical_inputs_verified &amp; complete_before_substitution),
-  source_score_disagreements = sum(!inning_runs_match_official)))</code></pre>
-<table>
-<colgroup>
-<col width="12%" />
-<col width="25%" />
-<col width="36%" />
-<col width="25%" />
-</colgroup>
-<thead>
-<tr class="header">
-<th align="right">half_innings</th>
-<th align="right">technical_inputs_verified</th>
-<th align="right">verified_complete_before_substitution</th>
-<th align="right">source_score_disagreements</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="right">28437</td>
-<td align="right">28023</td>
-<td align="right">22594</td>
-<td align="right">414</td>
-</tr>
-</tbody>
-</table>
-</div>
-<div id="complete-official-event-layer-and-decision-impact" class="section level2" number="9.3">
-<h2 number="9.3"><span class="header-section-number">9.3</span> Complete Official Event Layer and Decision Impact</h2>
-<p>The official event layer includes events omitted from the workbook, preserves source-row links where available, and supplies cumulative-score differences for run increments. Missing workbook events are supplemented, not invented. Extra innings remain in this audit table but are excluded from the confirmed primary sample. A line-score entry absent for an abandoned half-inning remains missing rather than becoming zero.</p>
-<pre class="r"><code>official_events_complete &lt;- official_plays %&gt;% left_join(official_games, by = c(&quot;team&quot;, &quot;game_id&quot;)) %&gt;%
-  mutate(season = as.integer(format(official_date, &quot;%Y&quot;)),
-    completed_pa = case_when(official_event %in% pa_events ~ TRUE,
-      official_event %in% non_pa_events ~ FALSE,
-      official_event %in% c(&quot;other_out&quot;, &quot;runner_out&quot;) &amp; official_runner_out_only ~ FALSE, TRUE ~ NA),
-    minigroup_id = paste(team, game_id, inning, inning_half, sep = &quot;_&quot;)) %&gt;%
-  group_by(team, game_id) %&gt;% arrange(play_index, .by_group = TRUE) %&gt;%
-  mutate(official_runs_increment = official_score_after - lag(official_score_after, default = 0)) %&gt;% ungroup() %&gt;%
-  left_join(pbp %&gt;% select(team, game_id, play_index, source_row, source_runs = runs_scored,
-                           source_batter_id = batter_id, date_source), by = c(&quot;team&quot;, &quot;game_id&quot;, &quot;play_index&quot;)) %&gt;%
-  mutate(supplemented_event = is.na(source_row),
-         source_batter_agrees = is.na(source_batter_id) | source_batter_id == official_batter_id)
-official_minigroups &lt;- official_events_complete %&gt;% group_by(minigroup_id, team, season, game_id,
-  official_date, inning, inning_half) %&gt;% summarise(
-    first_play_index = min(play_index), last_play_index = max(play_index), n_events = n(),
-    n_supplemented_events = sum(supplemented_event), n_completed_pa = sum(completed_pa %in% TRUE),
-    known_pa_events_only = all(!is.na(completed_pa)), source_batters_agree = all(source_batter_agrees),
-    official_feed_final = all(official_state == &quot;Final&quot;),
-    end_outs = last(official_outs_after), calculated_official_runs = sum(official_runs_increment),
-    valid_run_increments = all(!is.na(official_runs_increment) &amp; official_runs_increment &gt;= 0), .groups = &quot;drop&quot;) %&gt;%
-  left_join(official_half_scores, by = c(&quot;team&quot;, &quot;game_id&quot;, &quot;inning&quot;, &quot;inning_half&quot;)) %&gt;%
-  left_join(game_verification %&gt;% select(team, season, game_id, official_game_identity_verified,
-    official_starters_valid, unlocated_substitutes, first_substitution_play_index),
-    by = c(&quot;team&quot;, &quot;season&quot;, &quot;game_id&quot;)) %&gt;%
-  left_join(lineup_metric_coverage, by = c(&quot;team&quot;, &quot;season&quot;, &quot;game_id&quot;)) %&gt;%
-  mutate(official_score_reconciles = coalesce(calculated_official_runs == official_inning_runs, FALSE),
-    complete_before_substitution = end_outs == 3 &amp; unlocated_substitutes == 0L &amp;
-      (is.na(first_substitution_play_index) | last_play_index &lt; first_substitution_play_index),
-    technical_inputs_verified = coalesce(official_game_identity_verified &amp; official_starters_valid &amp;
-      source_batters_agree &amp; official_feed_final &amp; known_pa_events_only &amp; valid_run_increments &amp;
-      official_score_reconciles, FALSE),
-    lineup_label = &quot;not_classified&quot;, eligible_primary_analysis = FALSE,
-    classification_input_status = &quot;official_audit_layer_not_primary_sample&quot;)
-threshold_impact &lt;- bind_rows(lapply(c(0L, 50L, 100L, 150L), function(threshold) {
-  passes &lt;- lineup_inputs %&gt;% group_by(team, game_id) %&gt;% summarise(
-    all_nine_pass = n() == 9L &amp; all(previous_season_metrics_available &amp; official_pa &gt;= threshold), .groups = &quot;drop&quot;)
-  candidate &lt;- official_minigroups %&gt;% left_join(passes, by = c(&quot;team&quot;, &quot;game_id&quot;)) %&gt;%
-    filter(technical_inputs_verified, complete_before_substitution, all_nine_pass)
-  bind_rows(lapply(c(FALSE, TRUE), function(include_extras) {
-    selected &lt;- candidate %&gt;% filter(include_extras | inning &lt;= 9)
-    tibble(minimum_previous_season_pa = threshold, include_extra_innings = include_extras,
-      eligible_half_innings_if_selected = nrow(selected),
-      eligible_team_games_if_selected = n_distinct(paste(selected$team, selected$game_id)))
-  }))
-}))
-official_game_score_audit &lt;- official_events_complete %&gt;% group_by(team, game_id) %&gt;%
-  summarise(event_run_total = sum(official_runs_increment),
-            official_game_runs = first(official_game_runs), .groups = &quot;drop&quot;) %&gt;%
-  mutate(game_score_reconciles = event_run_total == official_game_runs)
-stopifnot(!anyDuplicated(official_minigroups$minigroup_id),
-  all(official_game_score_audit$game_score_reconciles),
-  sum(official_minigroups$n_events) == nrow(official_events_complete))
-knitr::kable(threshold_impact)</code></pre>
-<table>
-<colgroup>
-<col width="23%" />
-<col width="19%" />
-<col width="29%" />
-<col width="27%" />
-</colgroup>
-<thead>
-<tr class="header">
-<th align="right">minimum_previous_season_pa</th>
-<th align="left">include_extra_innings</th>
-<th align="right">eligible_half_innings_if_selected</th>
-<th align="right">eligible_team_games_if_selected</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="right">0</td>
-<td align="left">FALSE</td>
-<td align="right">9478</td>
-<td align="right">1347</td>
-</tr>
-<tr class="even">
-<td align="right">0</td>
+<td align="left">Every substitute has a substitution event</td>
 <td align="left">TRUE</td>
-<td align="right">9493</td>
-<td align="right">1347</td>
-</tr>
-<tr class="odd">
-<td align="right">50</td>
-<td align="left">FALSE</td>
-<td align="right">6040</td>
-<td align="right">846</td>
 </tr>
 <tr class="even">
-<td align="right">50</td>
+<td align="left">Every play is known to be a plate appearance or not</td>
 <td align="left">TRUE</td>
-<td align="right">6053</td>
-<td align="right">846</td>
 </tr>
 <tr class="odd">
-<td align="right">100</td>
-<td align="left">FALSE</td>
-<td align="right">3380</td>
-<td align="right">467</td>
-</tr>
-<tr class="even">
-<td align="right">100</td>
+<td align="left">Half-inning runs match the official line score</td>
 <td align="left">TRUE</td>
-<td align="right">3386</td>
-<td align="right">467</td>
-</tr>
-<tr class="odd">
-<td align="right">150</td>
-<td align="left">FALSE</td>
-<td align="right">2482</td>
-<td align="right">338</td>
 </tr>
 <tr class="even">
-<td align="right">150</td>
+<td align="left">Batters come up in lineup order before the first substitution</td>
 <td align="left">TRUE</td>
-<td align="right">2485</td>
-<td align="right">338</td>
+</tr>
+<tr class="odd">
+<td align="left">2024 OBP, SLG, and OPS match values recomputed from counts</td>
+<td align="left">TRUE</td>
 </tr>
 </tbody>
 </table>
+<pre class="r"><code>stopifnot(all(data_checks))</code></pre>
 </div>
-</div>
-<div id="confirmed-single-season-sample" class="section level1" number="10">
-<h1 number="10"><span class="header-section-number">10</span> Confirmed Single-Season Sample</h1>
-<p>The user confirmed all parameters below on 2026-10-29. Previous-season statistics are predictors, not additional outcome seasons. Multi-season caches remain source audit material. A half-inning is the outcome unit; a team-game starting lineup is the linked predictor unit. The same game may contribute multiple half-innings, so these are not independent experimental replicates.</p>
-<pre class="r"><code>analysis_year &lt;- 2025L
-metric_year &lt;- analysis_year - 1L
-minimum_prior_pa &lt;- 100L
-include_extra_innings &lt;- FALSE
-selection_confirmed &lt;- !is.na(analysis_year) &amp;&amp; !is.na(minimum_prior_pa) &amp;&amp; !is.na(include_extra_innings)
-season_sample_options &lt;- bind_rows(lapply(c(0L, 50L, 100L, 150L), function(threshold) {
-  passes &lt;- lineup_inputs %&gt;% group_by(team, game_id) %&gt;% summarise(
-    all_nine_pass = n() == 9L &amp; all(previous_season_metrics_available &amp; official_pa &gt;= threshold), .groups = &quot;drop&quot;)
-  official_minigroups %&gt;% left_join(passes, by = c(&quot;team&quot;, &quot;game_id&quot;)) %&gt;%
-    filter(technical_inputs_verified, complete_before_substitution, inning &lt;= 9, all_nine_pass) %&gt;%
-    group_by(season) %&gt;% summarise(minimum_previous_season_pa = threshold,
-      candidate_half_innings = n(), candidate_team_games = n_distinct(paste(team, game_id)), .groups = &quot;drop&quot;)
-}))
-decision_register &lt;- tibble(
-  decision = c(&quot;Roster&quot;, &quot;Supplementary source&quot;, &quot;Player metrics&quot;, &quot;Substitution policy&quot;,
-               &quot;Outcome season&quot;, &quot;Previous-season PA threshold&quot;, &quot;Extra innings&quot;),
-  status = rep(&quot;confirmed&quot;, 7),
-  choice = c(&quot;Actual nine-player game roster&quot;, &quot;Verified MLB official data&quot;,
-    &quot;Previous complete season, all MLB teams&quot;, &quot;Complete half-innings before first batting-roster substitution&quot;,
-    &quot;2025 outcomes with 2024 predictors&quot;, paste0(&quot;Every starter on every team has at least &quot;, minimum_prior_pa,
-      &quot; PA; missing metrics are not imputed&quot;),
-    &quot;Innings 1-9 only; extra innings retained outside the primary sample&quot;))
-knitr::kable(season_sample_options)</code></pre>
-<table>
-<colgroup>
-<col width="8%" />
-<col width="34%" />
-<col width="29%" />
-<col width="26%" />
-</colgroup>
-<thead>
-<tr class="header">
-<th align="right">season</th>
-<th align="right">minimum_previous_season_pa</th>
-<th align="right">candidate_half_innings</th>
-<th align="right">candidate_team_games</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="right">2023</td>
-<td align="right">0</td>
-<td align="right">1861</td>
-<td align="right">281</td>
-</tr>
-<tr class="even">
-<td align="right">2024</td>
-<td align="right">0</td>
-<td align="right">2701</td>
-<td align="right">382</td>
-</tr>
-<tr class="odd">
-<td align="right">2025</td>
-<td align="right">0</td>
-<td align="right">2819</td>
-<td align="right">386</td>
-</tr>
-<tr class="even">
-<td align="right">2026</td>
-<td align="right">0</td>
-<td align="right">2097</td>
-<td align="right">298</td>
-</tr>
-<tr class="odd">
-<td align="right">2023</td>
-<td align="right">50</td>
-<td align="right">786</td>
-<td align="right">120</td>
-</tr>
-<tr class="even">
-<td align="right">2024</td>
-<td align="right">50</td>
-<td align="right">1075</td>
-<td align="right">151</td>
-</tr>
-<tr class="odd">
-<td align="right">2025</td>
-<td align="right">50</td>
-<td align="right">2255</td>
-<td align="right">303</td>
-</tr>
-<tr class="even">
-<td align="right">2026</td>
-<td align="right">50</td>
-<td align="right">1924</td>
-<td align="right">272</td>
-</tr>
-<tr class="odd">
-<td align="right">2023</td>
-<td align="right">100</td>
-<td align="right">339</td>
-<td align="right">53</td>
-</tr>
-<tr class="even">
-<td align="right">2024</td>
-<td align="right">100</td>
-<td align="right">229</td>
-<td align="right">33</td>
-</tr>
-<tr class="odd">
-<td align="right">2025</td>
-<td align="right">100</td>
-<td align="right">1573</td>
-<td align="right">211</td>
-</tr>
-<tr class="even">
-<td align="right">2026</td>
-<td align="right">100</td>
-<td align="right">1239</td>
-<td align="right">170</td>
-</tr>
-<tr class="odd">
-<td align="right">2023</td>
-<td align="right">150</td>
-<td align="right">322</td>
-<td align="right">49</td>
-</tr>
-<tr class="even">
-<td align="right">2024</td>
-<td align="right">150</td>
-<td align="right">133</td>
-<td align="right">19</td>
-</tr>
-<tr class="odd">
-<td align="right">2025</td>
-<td align="right">150</td>
-<td align="right">1231</td>
-<td align="right">163</td>
-</tr>
-<tr class="even">
-<td align="right">2026</td>
-<td align="right">150</td>
-<td align="right">796</td>
-<td align="right">107</td>
-</tr>
-</tbody>
-</table>
-<pre class="r"><code>knitr::kable(decision_register)</code></pre>
-<table>
-<colgroup>
-<col width="24%" />
-<col width="8%" />
-<col width="67%" />
-</colgroup>
-<thead>
-<tr class="header">
-<th align="left">decision</th>
-<th align="left">status</th>
-<th align="left">choice</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="left">Roster</td>
-<td align="left">confirmed</td>
-<td align="left">Actual nine-player game roster</td>
-</tr>
-<tr class="even">
-<td align="left">Supplementary source</td>
-<td align="left">confirmed</td>
-<td align="left">Verified MLB official data</td>
-</tr>
-<tr class="odd">
-<td align="left">Player metrics</td>
-<td align="left">confirmed</td>
-<td align="left">Previous complete season, all MLB teams</td>
-</tr>
-<tr class="even">
-<td align="left">Substitution policy</td>
-<td align="left">confirmed</td>
-<td align="left">Complete half-innings before first batting-roster substitution</td>
-</tr>
-<tr class="odd">
-<td align="left">Outcome season</td>
-<td align="left">confirmed</td>
-<td align="left">2025 outcomes with 2024 predictors</td>
-</tr>
-<tr class="even">
-<td align="left">Previous-season PA threshold</td>
-<td align="left">confirmed</td>
-<td align="left">Every starter on every team has at least 100 PA; missing metrics are not imputed</td>
-</tr>
-<tr class="odd">
-<td align="left">Extra innings</td>
-<td align="left">confirmed</td>
-<td align="left">Innings 1-9 only; extra innings retained outside the primary sample</td>
-</tr>
-</tbody>
-</table>
-<pre class="r"><code>stopifnot(selection_confirmed, metric_year &lt; analysis_year)</code></pre>
-<div id="verify-the-batting-order-cycle" class="section level2" number="10.1">
-<h2 number="10.1"><span class="header-section-number">10.1</span> Verify the Batting-Order Cycle</h2>
-<p>Number completed plate appearances across the entire team-game, without resetting at inning boundaries. Compare the resulting 1-9 cycle with official starters before the first batting-roster substitution. Non-PA events do not advance the slot. This verifies the observed order only; it does not construct Traditional or OPS templates or label their similarity.</p>
-<pre class="r"><code>order_events &lt;- official_events_complete %&gt;% filter(season == analysis_year) %&gt;%
-  group_by(team, game_id) %&gt;% arrange(play_index, .by_group = TRUE) %&gt;%
-  mutate(completed_pa_index = cumsum(completed_pa %in% TRUE),
-         expected_slot = as.integer((completed_pa_index - 1L) %% 9L + 1L)) %&gt;% ungroup() %&gt;%
-  left_join(official_starters %&gt;% select(team, game_id, expected_slot = slot,
-                                       expected_starter_id = batter_id),
-            by = c(&quot;team&quot;, &quot;game_id&quot;, &quot;expected_slot&quot;)) %&gt;%
-  left_join(first_substitutions, by = c(&quot;team&quot;, &quot;game_id&quot;)) %&gt;%
-  mutate(before_substitution = is.na(first_substitution_play_index) | play_index &lt; first_substitution_play_index,
-         order_match = coalesce(official_batter_id == expected_starter_id, FALSE))
-batting_order_audit &lt;- order_events %&gt;% filter(before_substitution) %&gt;% group_by(team, game_id) %&gt;%
-  summarise(pre_substitution_pa = sum(completed_pa %in% TRUE),
-            unknown_pre_substitution_events = sum(is.na(completed_pa)),
-            order_mismatches = sum(completed_pa %in% TRUE &amp; !order_match), .groups = &quot;drop&quot;) %&gt;%
-  mutate(order_cycle_verified = pre_substitution_pa &gt; 0 &amp; unknown_pre_substitution_events == 0 &amp; order_mismatches == 0)
-half_start_slots &lt;- order_events %&gt;% filter(completed_pa %in% TRUE) %&gt;%
-  group_by(minigroup_id) %&gt;% slice_min(play_index, n = 1, with_ties = FALSE) %&gt;% ungroup() %&gt;%
-  transmute(minigroup_id, starting_slot = expected_slot, first_batter_id = official_batter_id)
-knitr::kable(batting_order_audit %&gt;% summarise(team_games_checked = n(),
-  completed_pa_checked = sum(pre_substitution_pa), mismatches = sum(order_mismatches)))</code></pre>
-<table>
-<thead>
-<tr class="header">
-<th align="right">team_games_checked</th>
-<th align="right">completed_pa_checked</th>
-<th align="right">mismatches</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="right">809</td>
-<td align="right">25416</td>
-<td align="right">0</td>
-</tr>
-</tbody>
-</table>
-</div>
-<div id="apply-confirmed-filters-and-record-exclusions" class="section level2" number="10.2">
-<h2 number="10.2"><span class="header-section-number">10.2</span> Apply Confirmed Filters and Record Exclusions</h2>
-<p>The flow table applies filters sequentially; removal counts must not be added to overlapping independent flags. Every 2025 half-inning remains in the eligibility audit with its first exclusion reason. The ready table contains no lineup-strategy labels. Rate checks use tolerances consistent with MLB’s three-decimal published rates.</p>
-<pre class="r"><code>metric_checks &lt;- lineup_inputs %&gt;% filter(season == analysis_year) %&gt;% mutate(
-  recalculated_slg = safe_rate(official_h + official_doubles + 2 * official_triples + 3 * official_hr, official_ab),
-  recalculated_obp = safe_rate(official_h + official_bb + official_hbp,
-    official_ab + official_bb + official_hbp + official_sf),
-  official_rate_checks_pass = coalesce(abs(official_slg - recalculated_slg) &lt;= 0.00051 &amp;
-    abs(official_obp - recalculated_obp) &lt;= 0.00051 &amp;
-    abs(official_ops - official_obp - official_slg) &lt;= 0.0011, FALSE))
-roster_eligibility &lt;- metric_checks %&gt;% group_by(team, game_id) %&gt;% summarise(
-  all_nine_metrics_available = n() == 9L &amp; all(previous_season_metrics_available),
-  all_nine_meet_pa_threshold = n() == 9L &amp; all(previous_season_metrics_available &amp; official_pa &gt;= minimum_prior_pa),
-  all_nine_rates_verified = n() == 9L &amp; all(official_rate_checks_pass), .groups = &quot;drop&quot;)
-eligibility_2025 &lt;- official_minigroups %&gt;% filter(season == analysis_year) %&gt;%
-  left_join(roster_eligibility, by = c(&quot;team&quot;, &quot;game_id&quot;)) %&gt;%
-  left_join(batting_order_audit, by = c(&quot;team&quot;, &quot;game_id&quot;)) %&gt;%
-  left_join(half_start_slots, by = &quot;minigroup_id&quot;) %&gt;% mutate(
-    in_confirmed_innings = include_extra_innings | inning &lt;= 9L,
-    meets_primary_conditions = coalesce(in_confirmed_innings &amp; technical_inputs_verified &amp;
-      complete_before_substitution &amp; all_nine_metrics_available &amp; all_nine_meet_pa_threshold, FALSE),
-    ready_for_classification = meets_primary_conditions &amp; coalesce(order_cycle_verified &amp; all_nine_rates_verified, FALSE),
-    exclusion_reason = case_when(!in_confirmed_innings ~ &quot;extra_inning&quot;,
-      !technical_inputs_verified ~ &quot;technical_verification_failed&quot;,
-      !complete_before_substitution ~ &quot;incomplete_or_at_or_after_first_substitution&quot;,
-      !coalesce(all_nine_metrics_available, FALSE) ~ &quot;missing_previous_season_metrics&quot;,
-      !coalesce(all_nine_meet_pa_threshold, FALSE) ~ paste0(&quot;at_least_one_starter_below_&quot;, minimum_prior_pa, &quot;_PA&quot;),
-      !coalesce(order_cycle_verified &amp; all_nine_rates_verified, FALSE) ~ &quot;order_or_rate_verification_failed&quot;,
-      TRUE ~ &quot;included&quot;),
-    lineup_id = paste(team, game_id, &quot;starting&quot;, sep = &quot;_&quot;))
-# A new verification failure must be investigated, not silently converted into a sampling rule.
-stopifnot(all(eligibility_2025$ready_for_classification[eligibility_2025$meets_primary_conditions]))
-flow_flags &lt;- list(
-  &quot;All official 2025 half-innings&quot; = rep(TRUE, nrow(eligibility_2025)),
-  &quot;Innings 1-9&quot; = eligibility_2025$in_confirmed_innings,
-  &quot;Official identities, events, and scores verified&quot; = eligibility_2025$technical_inputs_verified,
-  &quot;Complete half-inning before first roster substitution&quot; = eligibility_2025$complete_before_substitution,
-  &quot;All nine starters have 2024 metrics&quot; = eligibility_2025$all_nine_metrics_available,
-  &quot;All nine starters meet the confirmed prior-season PA threshold&quot; = eligibility_2025$all_nine_meet_pa_threshold,
-  &quot;Observed batting order and metric arithmetic verified&quot; = eligibility_2025$order_cycle_verified &amp; eligibility_2025$all_nine_rates_verified)
-names(flow_flags)[6] &lt;- paste0(&quot;All nine starters have at least &quot;, minimum_prior_pa, &quot; PA in &quot;, metric_year)
-keep &lt;- rep(TRUE, nrow(eligibility_2025)); previous_n &lt;- nrow(eligibility_2025)
-sample_flow_2025 &lt;- bind_rows(lapply(names(flow_flags), function(step) {
-  keep &lt;&lt;- keep &amp; coalesce(flow_flags[[step]], FALSE)
-  result &lt;- tibble(step = step, half_innings_remaining = sum(keep), removed_at_step = previous_n - sum(keep),
-    team_games_remaining = n_distinct(paste(eligibility_2025$team[keep], eligibility_2025$game_id[keep])))
-  previous_n &lt;&lt;- sum(keep)
-  result
-}))
-classification_inputs_2025 &lt;- eligibility_2025 %&gt;% filter(ready_for_classification) %&gt;%
-  transmute(minigroup_id, lineup_id, team, season, date = official_date, game_id,
-    inning, inning_half, starting_slot, first_batter_id, n_events, n_completed_pa,
-    inning_runs = official_inning_runs, end_outs, first_play_index, last_play_index,
-    first_substitution_play_index, metric_season = metric_year, minimum_prior_pa = minimum_prior_pa,
-    n_supplemented_events, ready_for_classification, lineup_label = &quot;not_classified&quot;) %&gt;%
-  arrange(date, game_id, team, inning)
-selected_lineups &lt;- classification_inputs_2025 %&gt;% distinct(team, game_id, lineup_id)
-lineup_inputs_2025 &lt;- metric_checks %&gt;% inner_join(selected_lineups, by = c(&quot;team&quot;, &quot;game_id&quot;)) %&gt;%
-  transmute(lineup_id, team, season, game_id, slot, batter_id, player = official_name,
-    metric_season, prior_pa = official_pa, prior_ab = official_ab,
-    prior_obp = official_obp, prior_slg = official_slg, prior_ops = official_ops,
-    official_rate_checks_pass, metric_source_url, metric_retrieved_at,
-    game_source_url = paste0(&quot;https://statsapi.mlb.com/api/v1.1/game/&quot;, game_id, &quot;/feed/live&quot;)) %&gt;%
-  arrange(team, game_id, slot)
-team_sample_2025 &lt;- classification_inputs_2025 %&gt;% group_by(team) %&gt;% summarise(
-  half_innings = n(), team_games = n_distinct(game_id), .groups = &quot;drop&quot;) %&gt;%
-  complete(team = teams, fill = list(half_innings = 0L, team_games = 0L))
-team_threshold_options_2025 &lt;- bind_rows(lapply(c(50L, 100L, 150L), function(threshold) {
-  passes &lt;- metric_checks %&gt;% group_by(team, game_id) %&gt;% summarise(
-    pass = n() == 9L &amp; all(previous_season_metrics_available &amp; official_pa &gt;= threshold), .groups = &quot;drop&quot;)
-  official_minigroups %&gt;% filter(season == analysis_year, inning &lt;= 9,
-    technical_inputs_verified, complete_before_substitution) %&gt;%
-    inner_join(passes %&gt;% filter(pass), by = c(&quot;team&quot;, &quot;game_id&quot;)) %&gt;%
-    count(team, name = &quot;candidate_half_innings&quot;) %&gt;%
-    complete(team = teams, fill = list(candidate_half_innings = 0L)) %&gt;%
-    mutate(minimum_previous_season_pa = threshold)
-}))
-empty_sample_teams &lt;- team_sample_2025$team[team_sample_2025$half_innings == 0L]
-# The user confirmed the same 100-PA threshold for every team to retain five-team coverage.
-scope_coverage_confirmed &lt;- TRUE
-decision_register &lt;- bind_rows(decision_register, tibble(
-  decision = &quot;Resulting team coverage after confirmed filters&quot;, status = &quot;confirmed&quot;,
-  choice = paste0(&quot;Retain all five teams using a uniform &quot;, minimum_prior_pa, &quot;-PA threshold&quot;)))
-lineup_row_checks &lt;- lineup_inputs_2025 %&gt;% group_by(lineup_id) %&gt;% summarise(
-  complete_nine = n() == 9L &amp; n_distinct(batter_id) == 9L &amp; identical(sort(slot), 1:9), .groups = &quot;drop&quot;)
-stopifnot(nrow(classification_inputs_2025) &gt; 0,
-  scope_coverage_confirmed, length(empty_sample_teams) == 0L,
-  setequal(classification_inputs_2025$team, teams),
-  !anyDuplicated(classification_inputs_2025$minigroup_id), all(lineup_row_checks$complete_nine),
-  setequal(classification_inputs_2025$lineup_id, lineup_inputs_2025$lineup_id),
-  all(classification_inputs_2025$season == analysis_year), all(lineup_inputs_2025$metric_season == metric_year),
-  all(lineup_inputs_2025$prior_pa &gt;= minimum_prior_pa),
-  all(classification_inputs_2025$inning &lt;= 9 &amp; classification_inputs_2025$end_outs == 3),
-  all(is.na(classification_inputs_2025$first_substitution_play_index) |
-    classification_inputs_2025$last_play_index &lt; classification_inputs_2025$first_substitution_play_index),
-  all(classification_inputs_2025$lineup_label == &quot;not_classified&quot;),
-  tail(sample_flow_2025$half_innings_remaining, 1) == nrow(classification_inputs_2025))
-preprocessing_readiness &lt;- tibble(
-  requirement = c(&quot;User sampling decisions&quot;, &quot;2025 games with 2024 predictors&quot;, &quot;Actual starting nine and order cycle&quot;,
-    &quot;Official half-inning and game scores&quot;, &quot;Pre-substitution complete half-innings&quot;,
-    paste0(&quot;All nine prior-season PA &gt;= &quot;, minimum_prior_pa),
-    &quot;Unique keys and nine-player joins&quot;, &quot;All five teams represented&quot;, &quot;Classification performed&quot;),
-  status = c(rep(&quot;passed_for_selected_sample&quot;, 8), &quot;not_started_as_requested&quot;))
-knitr::kable(sample_flow_2025)</code></pre>
+<div id="sample-filters" class="section level2" number="3.3">
+<h2 number="3.3"><span class="header-section-number">3.3</span> Sample Filters</h2>
+<pre class="r"><code>steps &lt;- list(&quot;All 2025 half-innings&quot; = rep(TRUE, nrow(halves)),
+              &quot;Innings 1-9&quot; = halves$inning &lt;= 9,
+              &quot;Complete, before the first substitution&quot; = halves$before_sub,
+              &quot;All nine starters have 2024 stats&quot; = halves$has_stats,
+              &quot;All nine starters have at least 100 PA in 2024&quot; = halves$pa_100)
+keep &lt;- rep(TRUE, nrow(halves))
+sample_flow &lt;- data.frame()
+for (s in names(steps)) {
+  keep &lt;- keep &amp; steps[[s]]
+  sample_flow &lt;- rbind(sample_flow, data.frame(step = s, half_innings = sum(keep),
+                                               team_games = n_distinct(halves$lineup_id[keep])))
+}
+halves$in_sample &lt;- keep
+knitr::kable(sample_flow)</code></pre>
 <table>
 <thead>
 <tr class="header">
 <th align="left">step</th>
-<th align="right">half_innings_remaining</th>
-<th align="right">removed_at_step</th>
-<th align="right">team_games_remaining</th>
+<th align="right">half_innings</th>
+<th align="right">team_games</th>
 </tr>
 </thead>
 <tbody>
 <tr class="odd">
-<td align="left">All official 2025 half-innings</td>
+<td align="left">All 2025 half-innings</td>
 <td align="right">7196</td>
-<td align="right">0</td>
 <td align="right">810</td>
 </tr>
 <tr class="even">
 <td align="left">Innings 1-9</td>
 <td align="right">7102</td>
-<td align="right">94</td>
 <td align="right">810</td>
 </tr>
 <tr class="odd">
-<td align="left">Official identities, events, and scores verified</td>
-<td align="right">7102</td>
-<td align="right">0</td>
-<td align="right">810</td>
-</tr>
-<tr class="even">
-<td align="left">Complete half-inning before first roster substitution</td>
+<td align="left">Complete, before the first substitution</td>
 <td align="right">5863</td>
-<td align="right">1239</td>
 <td align="right">808</td>
 </tr>
-<tr class="odd">
-<td align="left">All nine starters have 2024 metrics</td>
+<tr class="even">
+<td align="left">All nine starters have 2024 stats</td>
 <td align="right">2819</td>
-<td align="right">3044</td>
 <td align="right">386</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">All nine starters have at least 100 PA in 2024</td>
 <td align="right">1573</td>
-<td align="right">1246</td>
-<td align="right">211</td>
-</tr>
-<tr class="odd">
-<td align="left">Observed batting order and metric arithmetic verified</td>
-<td align="right">1573</td>
-<td align="right">0</td>
 <td align="right">211</td>
 </tr>
 </tbody>
 </table>
-<pre class="r"><code>knitr::kable(team_sample_2025)</code></pre>
-<table>
-<thead>
-<tr class="header">
-<th align="left">team</th>
-<th align="right">half_innings</th>
-<th align="right">team_games</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="left">Angels</td>
-<td align="right">71</td>
-<td align="right">13</td>
-</tr>
-<tr class="even">
-<td align="left">Cardinals</td>
-<td align="right">432</td>
-<td align="right">56</td>
-</tr>
-<tr class="odd">
-<td align="left">Cubs</td>
-<td align="right">115</td>
-<td align="right">17</td>
-</tr>
-<tr class="even">
-<td align="left">Dodgers</td>
-<td align="right">507</td>
-<td align="right">69</td>
-</tr>
-<tr class="odd">
-<td align="left">Giants</td>
-<td align="right">448</td>
-<td align="right">56</td>
-</tr>
-</tbody>
-</table>
-<pre class="r"><code>knitr::kable(team_threshold_options_2025)</code></pre>
-<table>
-<thead>
-<tr class="header">
-<th align="left">team</th>
-<th align="right">candidate_half_innings</th>
-<th align="right">minimum_previous_season_pa</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="left">Angels</td>
-<td align="right">234</td>
-<td align="right">50</td>
-</tr>
-<tr class="even">
-<td align="left">Cardinals</td>
-<td align="right">649</td>
-<td align="right">50</td>
-</tr>
-<tr class="odd">
-<td align="left">Cubs</td>
-<td align="right">272</td>
-<td align="right">50</td>
-</tr>
-<tr class="even">
-<td align="left">Dodgers</td>
-<td align="right">531</td>
-<td align="right">50</td>
-</tr>
-<tr class="odd">
-<td align="left">Giants</td>
-<td align="right">569</td>
-<td align="right">50</td>
-</tr>
-<tr class="even">
-<td align="left">Angels</td>
-<td align="right">71</td>
-<td align="right">100</td>
-</tr>
-<tr class="odd">
-<td align="left">Cardinals</td>
-<td align="right">432</td>
-<td align="right">100</td>
-</tr>
-<tr class="even">
-<td align="left">Cubs</td>
-<td align="right">115</td>
-<td align="right">100</td>
-</tr>
-<tr class="odd">
-<td align="left">Dodgers</td>
-<td align="right">507</td>
-<td align="right">100</td>
-</tr>
-<tr class="even">
-<td align="left">Giants</td>
-<td align="right">448</td>
-<td align="right">100</td>
-</tr>
-<tr class="odd">
-<td align="left">Angels</td>
-<td align="right">0</td>
-<td align="right">150</td>
-</tr>
-<tr class="even">
-<td align="left">Cardinals</td>
-<td align="right">432</td>
-<td align="right">150</td>
-</tr>
-<tr class="odd">
-<td align="left">Cubs</td>
-<td align="right">115</td>
-<td align="right">150</td>
-</tr>
-<tr class="even">
-<td align="left">Dodgers</td>
-<td align="right">473</td>
-<td align="right">150</td>
-</tr>
-<tr class="odd">
-<td align="left">Giants</td>
-<td align="right">211</td>
-<td align="right">150</td>
-</tr>
-</tbody>
-</table>
-<pre class="r"><code>knitr::kable(preprocessing_readiness)</code></pre>
-<table>
-<thead>
-<tr class="header">
-<th align="left">requirement</th>
-<th align="left">status</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="left">User sampling decisions</td>
-<td align="left">passed_for_selected_sample</td>
-</tr>
-<tr class="even">
-<td align="left">2025 games with 2024 predictors</td>
-<td align="left">passed_for_selected_sample</td>
-</tr>
-<tr class="odd">
-<td align="left">Actual starting nine and order cycle</td>
-<td align="left">passed_for_selected_sample</td>
-</tr>
-<tr class="even">
-<td align="left">Official half-inning and game scores</td>
-<td align="left">passed_for_selected_sample</td>
-</tr>
-<tr class="odd">
-<td align="left">Pre-substitution complete half-innings</td>
-<td align="left">passed_for_selected_sample</td>
-</tr>
-<tr class="even">
-<td align="left">All nine prior-season PA &gt;= 100</td>
-<td align="left">passed_for_selected_sample</td>
-</tr>
-<tr class="odd">
-<td align="left">Unique keys and nine-player joins</td>
-<td align="left">passed_for_selected_sample</td>
-</tr>
-<tr class="even">
-<td align="left">All five teams represented</td>
-<td align="left">passed_for_selected_sample</td>
-</tr>
-<tr class="odd">
-<td align="left">Classification performed</td>
-<td align="left">not_started_as_requested</td>
-</tr>
-</tbody>
-</table>
-<p>The prepared sample contains <strong>1573 half-innings</strong>, linked to <strong>211 team-games</strong> and <strong>209 distinct games</strong>. The lineup table contains 1899 player-slot rows. These are classification inputs, not evidence that either strategy performs better. Filtering on all nine players’ previous-season experience restricts the target population to experienced starting lineups.</p>
-<p><strong>Confirmed coverage:</strong> all five teams have eligible half-innings under the uniform 100-PA rule. Other thresholds above are diagnostic comparisons only. The user selected this rule after reviewing the loss of Angels at 150 PA; no team-specific threshold or missing-value imputation is used. Data preparation and scope confirmation are complete.</p>
-<p>Use <code>processed/classification_inputs_2025.csv</code> together with <code>processed/lineup_inputs_2025.csv</code>, joined by lineup_id. The first table contains half-inning identifiers, observed start slots, and verified runs. The second contains the actual nine-player order and 2024 metrics. The export <code>processed/classification_ready_2025.rds</code> packages both tables and the confirmed settings. No Traditional/OPS template, label, statistical comparison, or simulation is produced in this version.</p>
+<pre class="r"><code>sample_halves &lt;- halves %&gt;% filter(in_sample) %&gt;%
+  select(minigroup_id, lineup_id, team, date, game_id, inning, inning_half, starting_slot, first_batter_id,
+         n_completed_pa, inning_runs = runs) %&gt;%
+  arrange(date, game_id, team, inning)
+sample_lineups &lt;- lineups %&gt;% filter(lineup_id %in% sample_halves$lineup_id) %&gt;%
+  select(lineup_id, team, game_id, slot, batter_id, player, prior_pa = pa, prior_obp = obp,
+         prior_slg = slg, prior_ops = ops) %&gt;%
+  arrange(team, game_id, slot)
+
+write.csv(sample_halves, &quot;processed/classification_inputs_2025.csv&quot;, row.names = FALSE)
+write.csv(sample_lineups, &quot;processed/lineup_inputs_2025.csv&quot;, row.names = FALSE)
+write.csv(sample_flow, &quot;quality/sample_flow_2025.csv&quot;, row.names = FALSE)
+write.csv(select(halves, minigroup_id, lineup_id, team, date, game_id, inning, inning_half, end_outs,
+                 last_play, first_sub, before_sub, has_stats, pa_100, in_sample),
+          &quot;quality/eligibility_2025.csv&quot;, row.names = FALSE)</code></pre>
+<p>The sample has <strong>1573 half-innings</strong> from <strong>211 team-games</strong>. The two files in <code>processed/</code> join by <code>lineup_id</code>.</p>
 </div>
 </div>
-<div id="data-quality-checks-and-exports" class="section level1" number="11">
-<h1 number="11"><span class="header-section-number">11</span> Data Quality Checks and Exports</h1>
-<p>Checks guard against join expansion, nonunique keys, loss of records, and use of future-season metrics. Historical source issues remain visible in audit exports. The selected 2025 classification inputs use verified official lineups, 2024 metrics, substitution timing, and scores; they do not depend on the conflicting source-statistics rows.</p>
-<pre class="r"><code>stopifnot(!anyDuplicated(stats_valid[c(&quot;team&quot;, &quot;season&quot;, &quot;batter_id&quot;)]),
-          !anyDuplicated(minigroups$minigroup_id),
-          sum(minigroups$n_events) == nrow(pbp_joined),
-          all(minigroups$lineup_label == &quot;not_classified&quot;),
-          all(!probs$slg_source_usable))
-# Enforce column types, especially for columns with long stretches of missing values across seasons.
-stopifnot(is.numeric(pbp_raw$outs_before), is.numeric(pbp_raw$outs_added),
-          is.character(pbp_raw$bases_before), is.character(pbp_raw$bases_after))
-summary_checks &lt;- tibble(
-  metric = c(&quot;stats_nonempty_rows&quot;, &quot;stats_validated_rows&quot;, &quot;stats_conflicting_rows&quot;, &quot;stats_invalid_PA_rows&quot;,
-             &quot;probability_rows&quot;, &quot;valid_probability_vectors&quot;, &quot;probability_source_SLG_disabled&quot;,
-             &quot;pbp_rows&quot;, &quot;pbp_exact_duplicates&quot;, &quot;pbp_conflicting_rows&quot;, &quot;pbp_unknown_PA_events&quot;,
-             &quot;minigroups&quot;, &quot;minigroups_end_below_3&quot;, &quot;pbp_records_matched_to_validated_stats&quot;),
-  value = c(nrow(stats), nrow(stats_valid), sum(stats$conflicting_key), sum(stats$invalid_pa),
-            nrow(probs), sum(probs$eligible_probability_vector), sum(!probs$slg_source_usable),
-            nrow(pbp), sum(pbp$exact_duplicate), sum(pbp$conflicting_key), sum(is.na(pbp$completed_pa)),
-            nrow(minigroups), sum(minigroups$end_outs &lt; 3), sum(pbp_joined$has_validated_season_stats)))
-knitr::kable(summary_checks)</code></pre>
-<table>
-<thead>
-<tr class="header">
-<th align="left">metric</th>
-<th align="right">value</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td align="left">stats_nonempty_rows</td>
-<td align="right">212</td>
-</tr>
-<tr class="even">
-<td align="left">stats_validated_rows</td>
-<td align="right">192</td>
-</tr>
-<tr class="odd">
-<td align="left">stats_conflicting_rows</td>
-<td align="right">16</td>
-</tr>
-<tr class="even">
-<td align="left">stats_invalid_PA_rows</td>
-<td align="right">7</td>
-</tr>
-<tr class="odd">
-<td align="left">probability_rows</td>
-<td align="right">511</td>
-</tr>
-<tr class="even">
-<td align="left">valid_probability_vectors</td>
-<td align="right">511</td>
-</tr>
-<tr class="odd">
-<td align="left">probability_source_SLG_disabled</td>
-<td align="right">511</td>
-</tr>
-<tr class="even">
-<td align="left">pbp_rows</td>
-<td align="right">121588</td>
-</tr>
-<tr class="odd">
-<td align="left">pbp_exact_duplicates</td>
-<td align="right">0</td>
-</tr>
-<tr class="even">
-<td align="left">pbp_conflicting_rows</td>
-<td align="right">0</td>
-</tr>
-<tr class="odd">
-<td align="left">pbp_unknown_PA_events</td>
-<td align="right">0</td>
-</tr>
-<tr class="even">
-<td align="left">minigroups</td>
-<td align="right">28437</td>
-</tr>
-<tr class="odd">
-<td align="left">minigroups_end_below_3</td>
-<td align="right">117</td>
-</tr>
-<tr class="even">
-<td align="left">pbp_records_matched_to_validated_stats</td>
-<td align="right">88191</td>
-</tr>
-</tbody>
-</table>
-<pre class="r"><code>outputs &lt;- list(player_stats_audited = stats, player_stats_validated = stats_valid,
-                player_probabilities_clean = probs, play_by_play_clean = pbp_joined,
-                minigroups_preclassification = minigroups, player_stats_observed = observed_stats,
-                player_metrics_prior_day = pregame_metrics,
-                player_probabilities_observed = probabilities_observed,
-                official_team_stats = official_team_stats, official_previous_seasons = official_previous_seasons,
-                official_starting_lineups = official_starters, official_substitutions = official_substitutions,
-                lineup_inputs_preclassification = lineup_inputs,
-                official_events_complete = official_events_complete,
-                official_minigroups_preclassification = official_minigroups,
-                classification_inputs_2025 = classification_inputs_2025,
-                lineup_inputs_2025 = lineup_inputs_2025)
-for (nm in names(outputs)) write_csv(outputs[[nm]], file.path(&quot;processed&quot;, paste0(nm, &quot;.csv&quot;)))
-saveRDS(outputs, &quot;processed/preprocessed_data.rds&quot;)
-classification_bundle &lt;- list(
-  settings = list(analysis_year = analysis_year, metric_year = metric_year, minimum_prior_pa = minimum_prior_pa,
-    include_extra_innings = include_extra_innings, roster = &quot;actual_starting_nine&quot;,
-    substitution_policy = &quot;complete_half_innings_before_first_batting_roster_substitution&quot;,
-    missing_metric_policy = &quot;no_imputation&quot;, scope_coverage_confirmed = scope_coverage_confirmed,
-    classification_status = &quot;not_started&quot;),
-  minigroups = classification_inputs_2025, lineups = lineup_inputs_2025,
-  sample_flow = sample_flow_2025, decisions = decision_register)
-saveRDS(classification_bundle, &quot;processed/classification_ready_2025.rds&quot;)
-quality &lt;- list(source_manifest = source_manifest, summary_checks = summary_checks,
-                player_identity_map = identity_map, identity_ambiguities = identity_ambiguities,
-                player_stats_issues = stats_issues, stats_coverage = stats_coverage,
-                probability_issues = probs %&gt;% filter(!eligible_probability_vector | !slg_source_usable),
-                event_dictionary = event_dictionary, state_coverage = state_coverage,
-                pbp_excluded_records = pbp %&gt;% filter(exact_duplicate | conflicting_key | metadata_invalid),
-                pbp_state_issues = pbp_joined %&gt;% filter(state_chain_invalid | invalid_runs |
-                  !bases_before_valid_or_missing | !bases_after_valid_or_missing),
-                join_coverage = join_coverage, unmatched_players = unmatched_players,
-                stats_reconciliation = stats_reconciliation, probability_reconciliation = prob_reconciliation,
-                probability_reconciliation_summary = prob_reconciliation_summary,
-                season_fingerprint_candidates = fingerprint_candidates,
-                game_coverage = game_coverage, preprocessing_readiness = preprocessing_readiness,
-                official_downloads = official_downloads, official_stat_comparison = official_stat_comparison,
-                official_identity_issues = official_identity_issues, resolved_runner_events = resolved_runner_events,
-                game_verification = game_verification, lineup_metric_coverage = lineup_metric_coverage,
-                threshold_impact = threshold_impact, official_missing_halves = official_missing_halves,
-                official_substitute_presence = substitute_presence, date_corrections = date_corrections,
-                official_game_score_audit = official_game_score_audit,
-                season_sample_options = season_sample_options, decision_register = decision_register,
-                local_only_readiness = local_only_readiness, batting_order_audit_2025 = batting_order_audit,
-                eligibility_2025 = eligibility_2025, sample_flow_2025 = sample_flow_2025,
-                team_sample_2025 = team_sample_2025,
-                team_threshold_options_2025 = team_threshold_options_2025,
-                selected_metric_checks_2025 = metric_checks %&gt;% semi_join(selected_lineups, by = c(&quot;team&quot;, &quot;game_id&quot;)))
-for (nm in names(quality)) write_csv(quality[[nm]], file.path(&quot;quality&quot;, paste0(nm, &quot;.csv&quot;)))
-# Verify exported RDS structure and row counts, and confirm that source files remain unchanged.
-saved &lt;- readRDS(&quot;processed/preprocessed_data.rds&quot;)
-stopifnot(identical(vapply(saved, nrow, integer(1)), vapply(outputs, nrow, integer(1))),
-          identical(unname(tools::md5sum(files)), source_manifest$md5))
-ready_saved &lt;- readRDS(&quot;processed/classification_ready_2025.rds&quot;)
-stopifnot(identical(ready_saved, classification_bundle))</code></pre>
-</div>
-<div id="classification-under-the-scopes-rules" class="section level1" number="12">
-<h1 number="12"><span class="header-section-number">12</span> Classification Under the Scope’s Rules</h1>
+<div id="classification-under-the-scopes-rules" class="section level1" number="4">
+<h1 number="4"><span class="header-section-number">4</span> Classification Under the Scope’s Rules</h1>
 <p>Rules from page 2 of the scope, applied to each team-game’s actual starting nine with 2024 metrics:</p>
 <ul>
 <li><strong>Traditional (A):</strong> slot 1 highest OBP; slot 2 next-highest OBP; slot 3 highest remaining OPS; slot 4 highest remaining SLG; slot 5 highest remaining OPS; slots 6-9 by OPS, high to low.</li>
@@ -3571,8 +611,8 @@ ops_order &lt;- function(d) {
   c(top5[order(-d$ops[top5])], a[6:9])
 }
 
-classify_lineups &lt;- function(lineups, b_rule = ops_order) {
-  result &lt;- bind_rows(lapply(split(lineups, lineups$lineup_id), function(d) {
+classify_lineups &lt;- function(x, b_rule = ops_order) {
+  result &lt;- bind_rows(lapply(split(x, x$lineup_id), function(d) {
     d &lt;- d[order(d$slot), ]
     data.frame(lineup_id = d$lineup_id[1], team = d$team[1],
                traditional = all(traditional_order(d) == 1:9), ops_ranked = all(b_rule(d) == 1:9))
@@ -3591,33 +631,23 @@ count_groups &lt;- function(groups, half_innings, scenario) {
     summarise(n = paste0(n(), &quot; (&quot;, n_distinct(lineup_id), &quot;)&quot;)) %&gt;%
     mutate(scenario = scenario)
 }</code></pre>
-<div id="group-counts" class="section level2" number="12.1">
-<h2 number="12.1"><span class="header-section-number">12.1</span> Group Counts</h2>
+<div id="group-counts" class="section level2" number="4.1">
+<h2 number="4.1"><span class="header-section-number">4.1</span> Group Counts</h2>
 <p>The main analysis plus three checks that each change one assumption. The 2025 check uses end-of-season stats that managers did not have when setting lineups.</p>
-<pre class="r"><code>lineups_2024 &lt;- lineup_inputs_2025 %&gt;%
-  select(lineup_id, team, slot, player, batter_id, obp = prior_obp, slg = prior_slg, ops = prior_ops)
-half_innings_main &lt;- classification_inputs_2025 %&gt;% select(lineup_id)
+<pre class="r"><code>lineups_main &lt;- lineups %&gt;% filter(lineup_id %in% sample_halves$lineup_id)
+half_innings_main &lt;- sample_halves %&gt;% select(lineup_id)
 
-stats_2025 &lt;- official_previous_seasons %&gt;% filter(season == 2025) %&gt;%
-  select(batter_id, obp = official_obp, slg = official_slg, ops = official_ops)
-lineups_2025_stats &lt;- lineups_2024 %&gt;% select(lineup_id, team, slot, player, batter_id) %&gt;%
-  left_join(stats_2025, by = &quot;batter_id&quot;)
+lineups_2025_stats &lt;- lineups_main %&gt;% select(lineup_id, team, slot, player, batter_id) %&gt;%
+  left_join(stats %&gt;% filter(season == 2025) %&gt;% select(batter_id, obp, slg, ops), by = &quot;batter_id&quot;)
 
-half_innings_any_pa &lt;- eligibility_2025 %&gt;%
-  filter(in_confirmed_innings, technical_inputs_verified, complete_before_substitution,
-         all_nine_metrics_available, order_cycle_verified, all_nine_rates_verified) %&gt;%
-  select(lineup_id)
-lineups_any_pa &lt;- metric_checks %&gt;%
-  mutate(lineup_id = paste(team, game_id, &quot;starting&quot;, sep = &quot;_&quot;)) %&gt;%
-  filter(lineup_id %in% half_innings_any_pa$lineup_id) %&gt;%
-  select(lineup_id, team, slot, player = official_name, batter_id,
-         obp = official_obp, slg = official_slg, ops = official_ops)
+half_innings_any_pa &lt;- halves %&gt;% filter(inning &lt;= 9, before_sub, has_stats) %&gt;% select(lineup_id)
+lineups_any_pa &lt;- lineups %&gt;% filter(lineup_id %in% half_innings_any_pa$lineup_id)
 stopifnot(!anyNA(lineups_2025_stats$ops), !anyNA(lineups_any_pa$ops))
 
-groups_main &lt;- classify_lineups(lineups_2024)
+groups_main &lt;- classify_lineups(lineups_main)
 group_counts &lt;- bind_rows(
   count_groups(groups_main, half_innings_main, &quot;Main: 2024 stats, page-2 rules&quot;),
-  count_groups(classify_lineups(lineups_2024, function(d) order(-d$ops)), half_innings_main,
+  count_groups(classify_lineups(lineups_main, function(d) order(-d$ops)), half_innings_main,
                &quot;Check: B = all nine by OPS (page-3 table)&quot;),
   count_groups(classify_lineups(lineups_2025_stats), half_innings_main, &quot;Check: 2025 end-of-season stats&quot;),
   count_groups(classify_lineups(lineups_any_pa), half_innings_any_pa, &quot;Check: no 100-PA threshold&quot;))
@@ -3672,7 +702,7 @@ main_half &lt;- half_innings_main %&gt;% inner_join(groups_main, by = &quot;line
 <li>The Traditional group is empty in every check, so the two-group t-test cannot be run under these rules.</li>
 </ul>
 <pre class="r"><code>matched_id &lt;- groups_main$lineup_id[groups_main$group != &quot;Neither&quot;][1]
-d &lt;- lineups_2024 %&gt;% filter(lineup_id == matched_id) %&gt;% arrange(slot)
+d &lt;- lineups_main %&gt;% filter(lineup_id == matched_id) %&gt;% arrange(slot)
 knitr::kable(data.frame(slot = 1:9, observed = d$player, obp = d$obp, slg = d$slg, ops = d$ops,
                         traditional = d$player[traditional_order(d)], ops_ranked = d$player[ops_order(d)]),
              caption = paste(&quot;The only matched lineup:&quot;, matched_id))</code></pre>
@@ -3777,10 +807,10 @@ knitr::kable(data.frame(slot = 1:9, observed = d$player, obp = d$obp, slg = d$sl
 <li>This lineup is all nine hitters by OPS. It fails the Traditional rule because Freeman’s OBP (.378) is higher than Betts’s (.372), so Strategy A bats Freeman second.</li>
 </ul>
 </div>
-<div id="why-no-lineup-is-traditional" class="section level2" number="12.2">
-<h2 number="12.2"><span class="header-section-number">12.2</span> Why No Lineup Is Traditional</h2>
+<div id="why-no-lineup-is-traditional" class="section level2" number="4.2">
+<h2 number="4.2"><span class="header-section-number">4.2</span> Why No Lineup Is Traditional</h2>
 <p><strong>1. Each rule on its own rarely holds.</strong></p>
-<pre class="r"><code>lineup_list &lt;- lapply(split(lineups_2024, lineups_2024$lineup_id), function(d) d[order(d$slot), ])
+<pre class="r"><code>lineup_list &lt;- lapply(split(lineups_main, lineups_main$lineup_id), function(d) d[order(d$slot), ])
 
 # Does the batter in slot j have the best value of that slot&#39;s metric among slots j to 9?
 slot_check &lt;- function(d) sapply(1:9, function(j) {
@@ -3934,8 +964,8 @@ knitr::kable(lineup_variation)</code></pre>
 <li>Managers adjust for rest days, opposing pitchers, platoons, and current form, which a formula on last season’s stats cannot capture.</li>
 </ul>
 </div>
-<div id="conclusion" class="section level2" number="12.3">
-<h2 number="12.3"><span class="header-section-number">12.3</span> Conclusion</h2>
+<div id="conclusion" class="section level2" number="4.3">
+<h2 number="4.3"><span class="header-section-number">4.3</span> Conclusion</h2>
 <ul>
 <li>Strategies A and B are recipes for building a lineup from nine hitters, not descriptions of how managers set lineups, so almost no real lineup matches them.</li>
 <li>Option 1: simulate both orders with the same nine hitters and compare expected runs, which matches the scope’s goal of testing whether rearranging the same hitters helps.</li>
@@ -3944,8 +974,8 @@ knitr::kable(lineup_variation)</code></pre>
 </ul>
 </div>
 </div>
-<div id="session-information" class="section level1" number="13">
-<h1 number="13"><span class="header-section-number">13</span> Session Information</h1>
+<div id="session-information" class="section level1" number="5">
+<h1 number="5"><span class="header-section-number">5</span> Session Information</h1>
 <pre class="r"><code>sessionInfo()</code></pre>
 <pre><code>## R version 4.5.3 (2026-03-11)
 ## Platform: aarch64-apple-darwin20
@@ -3969,14 +999,13 @@ knitr::kable(lineup_variation)</code></pre>
 ## 
 ## loaded via a namespace (and not attached):
 ##  [1] vctrs_0.6.5       cli_3.6.5         knitr_1.50        rlang_1.1.6      
-##  [5] xfun_0.53         stringi_1.8.7     purrr_1.1.0       generics_0.1.4   
-##  [9] jsonlite_2.0.0    glue_1.8.0        htmltools_0.5.8.1 sass_0.4.10      
-## [13] readxl_1.4.5      rmarkdown_2.30    cellranger_1.1.0  evaluate_1.0.5   
-## [17] jquerylib_0.1.4   tibble_3.3.0      fastmap_1.2.0     yaml_2.3.10      
-## [21] lifecycle_1.0.4   compiler_4.5.3    pkgconfig_2.0.3   digest_0.6.37    
-## [25] R6_2.6.1          tidyselect_1.2.1  parallel_4.5.3    pillar_1.11.0    
-## [29] magrittr_2.0.3    bslib_0.9.0       withr_3.0.2       tools_4.5.3      
-## [33] cachem_1.1.0</code></pre>
+##  [5] xfun_0.53         purrr_1.1.0       generics_0.1.4    jsonlite_2.0.0   
+##  [9] glue_1.8.0        htmltools_0.5.8.1 sass_0.4.10       readxl_1.4.5     
+## [13] rmarkdown_2.30    cellranger_1.1.0  evaluate_1.0.5    jquerylib_0.1.4  
+## [17] tibble_3.3.0      fastmap_1.2.0     yaml_2.3.10       lifecycle_1.0.4  
+## [21] compiler_4.5.3    pkgconfig_2.0.3   digest_0.6.37     R6_2.6.1         
+## [25] tidyselect_1.2.1  pillar_1.11.0     magrittr_2.0.3    bslib_0.9.0      
+## [29] withr_3.0.2       tools_4.5.3       cachem_1.1.0</code></pre>
 </div>
 
 
