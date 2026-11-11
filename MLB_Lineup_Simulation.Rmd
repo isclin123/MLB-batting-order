@@ -1,0 +1,647 @@
+---
+title: "MLB 2025 Batting Order Simulation"
+author: "Math 534 Project"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: show
+    df_print: paged
+---
+
+# Overview
+
+**Key finding:** with the same nine hitters, the Traditional and OPS-ranked orders produce practically the same expected runs. The two rules give identical orders for the Cubs and Giants. For the other three teams the difference is at most 0.005 runs per game, under 1 run over a season, and every 95% interval includes zero.
+
+The classification approach in `MLB_Lineup_Analysis.Rmd` found no real lineup that follows the Traditional rule. This file answers the scope's question directly: with the same nine hitters, does the Traditional order (A) or the OPS-ranked order (B) produce more expected runs?
+
+- **Hitters:** each team's nine regulars in 2025 (most plate appearances for the team).
+- **Orders:** built with the scope's page-2 rules from pooled 2023-2024 OBP, SLG, and OPS, which is what a manager knew before 2025.
+- **Simulation inputs:** each hitter's 2025 outcome rates, plus how runners moved on each kind of play in 2025.
+- **Method:** a Markov chain gives the exact expected runs per nine innings. A Monte Carlo simulation checks the chain and gives run distributions.
+- **Validation:** 2026 is held out. The 2026 regular season is complete in the MLB Stats API and in the play-by-play workbook.
+
+To reproduce, Knit in RStudio or run `rmarkdown::render("MLB_Lineup_Simulation.Rmd")`. The first run downloads about 750 game files into `source_cache/` and needs network access.
+
+```{r setup, message=FALSE}
+library(dplyr)
+library(tidyr)
+knitr::opts_chunk$set(message = FALSE)
+for (d in c("source_cache/api/games", "processed")) dir.create(d, recursive = TRUE, showWarnings = FALSE)
+```
+
+# Data
+
+## Season Statistics
+
+All statistics come from the MLB Stats API (regular season). The supplied workbook `Math 534 Baseball Project-2.xlsx` is not used: it has only 1 Dodgers hitter and 5 Giants hitters for 2024, and 23 Dodgers rows for 2025.
+
+```{r api-functions}
+# Download a JSON file once; later runs read the saved copy.
+get_json <- function(url, file) {
+  if (!file.exists(file)) saveRDS(jsonlite::fromJSON(url, simplifyVector = FALSE), file)
+  readRDS(file)
+}
+val <- function(x) if (is.null(x)) NA else x  # missing JSON field becomes NA
+team_ids <- c(Dodgers = 119, Cubs = 112, Cardinals = 138, Angels = 108, Giants = 137)
+api <- "https://statsapi.mlb.com/api/v1"
+stat_row <- function(s) data.frame(pa = s$plateAppearances, ab = s$atBats, h = s$hits, d2 = s$doubles, d3 = s$triples,
+                                   hr = s$homeRuns, bb = s$baseOnBalls, hbp = s$hitByPitch, so = s$strikeOuts,
+                                   sf = s$sacFlies)
+
+# Season hitting totals for every MLB player (traded players: one row, all teams combined).
+league_hitting <- function(season) {
+  url <- paste0(api, "/stats?stats=season&group=hitting&gameType=R&playerPool=ALL&sportIds=1&limit=10000&season=", season)
+  bind_rows(lapply(get_json(url, sprintf("source_cache/api/league_%d.rds", season))$stats[[1]]$splits, function(p)
+    data.frame(season = season, batter_id = as.character(p$player$id), player = p$player$fullName, stat_row(p$stat))))
+}
+
+# Season hitting totals for a whole team.
+team_hitting <- function(season, team) {
+  url <- paste0(api, "/teams/", team_ids[[team]], "/stats?stats=season&group=hitting&gameType=R&season=", season)
+  s <- get_json(url, sprintf("source_cache/api/teamtotal_%d_%s.rds", season, team))$stats[[1]]$splits[[1]]$stat
+  data.frame(team = team, stat_row(s))
+}
+
+# Regular-season games that were played to a final result.
+final_games <- function(season, team) {
+  url <- paste0(api, "/schedule?sportId=1&gameType=R&season=", season, "&teamId=", team_ids[[team]],
+                "&fields=dates,date,games,gamePk,status,abstractGameState,detailedState,teams,away,home,team,id,score")
+  d <- get_json(url, sprintf("source_cache/api/sched_%d_%s.rds", season, team))
+  unlist(lapply(d$dates, function(dt) unlist(lapply(dt$games, function(g)
+    if (g$status$abstractGameState == "Final" && !grepl("Postponed|Cancelled|Suspended", g$status$detailedState))
+      as.character(g$gamePk)))))
+}
+```
+
+```{r season-stats}
+league <- bind_rows(lapply(2023:2025, league_hitting))
+stopifnot(!anyDuplicated(league[c("season", "batter_id")]))
+season_2025 <- league %>% filter(season == 2025)
+
+count_cols <- c("pa", "ab", "h", "d2", "d3", "hr", "bb", "hbp", "so", "sf")
+add_rates <- function(d) mutate(d, obp = (h + bb + hbp) / (ab + bb + hbp + sf),
+                                slg = (h + d2 + 2 * d3 + 3 * hr) / ab, ops = obp + slg)
+pooled <- function(seasons) league %>% filter(season %in% seasons) %>% group_by(batter_id) %>%
+  summarise(across(all_of(count_cols), sum), .groups = "drop") %>% add_rates()
+
+# Seven plate-appearance outcomes. BB includes intentional walks and hit-by-pitch;
+# OUT is every other plate appearance (outs in play, errors, fielder's choice, sacrifices, interference).
+categories <- c("1B", "2B", "3B", "HR", "BB", "K", "OUT")
+outcome_counts <- function(d) with(d, cbind(`1B` = h - d2 - d3 - hr, `2B` = d2, `3B` = d3, HR = hr,
+                                            BB = bb + hbp, K = so, OUT = pa - h - bb - hbp - so))
+stopifnot(all(outcome_counts(league) >= 0))
+table(season = league$season)
+```
+
+## 2025 Play-by-Play
+
+Every 2025 regular-season game involving the five teams, both offenses. For each play: the inning, the event, the outs and runners after the play, and the batting team's score.
+
+```{r game-feeds}
+game_fields <- paste(c("gameData", "status", "abstractGameState", "teams", "away", "home", "id", "liveData", "plays",
+                       "allPlays", "about", "inning", "halfInning", "result", "eventType", "awayScore", "homeScore",
+                       "count", "outs", "matchup", "batter", "postOnFirst", "postOnSecond", "postOnThird"), collapse = ",")
+read_plays <- function(g) {
+  z <- get_json(paste0("https://statsapi.mlb.com/api/v1.1/game/", g, "/feed/live?fields=", game_fields),
+                sprintf("source_cache/api/games/%s.rds", g))
+  ap <- z$liveData$plays$allPlays
+  half <- vapply(ap, function(p) p$about$halfInning, "")
+  data.frame(game_id = g, state = z$gameData$status$abstractGameState, play = seq_along(ap),
+             batting_team_id = ifelse(half == "top", z$gameData$teams$away$id, z$gameData$teams$home$id),
+             inning = vapply(ap, function(p) as.integer(p$about$inning), 1L), half = half,
+             batter_id = vapply(ap, function(p) as.character(p$matchup$batter$id), ""),
+             event = vapply(ap, function(p) as.character(val(p$result$eventType)), ""),
+             outs = vapply(ap, function(p) as.integer(val(p$count$outs)), 1L),
+             score = vapply(seq_along(ap), function(i)
+               as.numeric(val(ap[[i]]$result[[paste0(if (half[i] == "top") "away" else "home", "Score")]])), 1),
+             on1 = vapply(ap, function(p) !is.null(p$matchup$postOnFirst), TRUE),
+             on2 = vapply(ap, function(p) !is.null(p$matchup$postOnSecond), TRUE),
+             on3 = vapply(ap, function(p) !is.null(p$matchup$postOnThird), TRUE))
+}
+game_ids_2025 <- sort(unique(unlist(lapply(names(team_ids), function(t) final_games(2025, t)))))
+raw_plays <- bind_rows(lapply(game_ids_2025, read_plays))
+c(games = length(game_ids_2025), plays = nrow(raw_plays))
+```
+
+```{r plays}
+event_category <- c(
+  single = "1B", double = "2B", triple = "3B", home_run = "HR",
+  walk = "BB", intent_walk = "BB", hit_by_pitch = "BB",
+  strikeout = "K", strikeout_double_play = "K", strikeout_triple_play = "K",
+  field_out = "OUT", force_out = "OUT", grounded_into_double_play = "OUT", grounded_into_triple_play = "OUT",
+  double_play = "OUT", triple_play = "OUT", sac_fly = "OUT", sac_fly_double_play = "OUT", sac_bunt = "OUT",
+  sac_bunt_double_play = "OUT", field_error = "OUT", fielders_choice = "OUT", fielders_choice_out = "OUT",
+  catcher_interf = "OUT", batter_interference = "OUT")
+# Plays that end without a completed plate appearance; they change the state but are not outcomes.
+non_pa_events <- c("caught_stealing_2b", "caught_stealing_3b", "caught_stealing_home", "pickoff_1b", "pickoff_2b",
+                   "pickoff_3b", "pickoff_caught_stealing_2b", "pickoff_caught_stealing_3b",
+                   "pickoff_caught_stealing_home", "pickoff_error_1b", "pickoff_error_2b", "pickoff_error_3b",
+                   "stolen_base_2b", "stolen_base_3b", "stolen_base_home", "wild_pitch", "passed_ball", "balk",
+                   "other_advance", "other_out", "runner_double_play", "error", "defensive_indiff")
+n_runners <- function(b) b %% 2 + b %/% 2 %% 2 + b %/% 4
+
+plays <- raw_plays %>%
+  mutate(category = unname(event_category[event]), is_pa = !is.na(category),
+         bases = on1 + 2L * on2 + 4L * on3,
+         team = names(team_ids)[match(batting_team_id, team_ids)]) %>%
+  group_by(game_id, half) %>% arrange(play, .by_group = TRUE) %>%
+  mutate(runs = score - lag(score, default = 0)) %>%
+  group_by(game_id, inning, half) %>%
+  mutate(pre_outs = lag(outs, default = 0L), pre_bases = lag(bases, default = 0L),
+         runs_rest = rev(cumsum(rev(runs))), last_play = row_number() == n()) %>%
+  ungroup() %>%
+  mutate(used = inning <= 8 | (inning == 9 & half == "top"),
+         balanced = outs == 3 |
+           n_runners(pre_bases) + is_pa == n_runners(bases) + runs + outs - pre_outs)
+table(category = plays$category, useNA = "ifany")
+```
+
+`NA` rows are steals, pickoffs, and other plays without a completed plate appearance. `balanced` checks that every runner and the batter is accounted for: runners before plus the batter equal runners after plus runs plus new outs. Only innings 1-8 and the top of the 9th feed the model (`used`), because a walk-off can end the bottom of the 9th early and extra innings start with a runner on second.
+
+```{r play-checks}
+used <- plays %>% filter(used)
+feed_counts <- plays %>% filter(is_pa, !is.na(team)) %>% count(team, category) %>%
+  pivot_wider(names_from = category, values_from = n) %>% select(team, all_of(categories)) %>% arrange(team)
+team_totals <- bind_rows(lapply(names(team_ids), function(t) team_hitting(2025, t))) %>% arrange(team)
+stat_counts <- data.frame(team = team_totals$team, outcome_counts(team_totals), check.names = FALSE)
+
+play_checks <- c(
+  "All games are final" = all(plays$state == "Final"),
+  "Every play is classified" = all(plays$event %in% c(names(event_category), non_pa_events)),
+  "Outs never decrease within a half-inning" = all(plays$outs >= plays$pre_outs & plays$outs <= 3),
+  "No negative runs" = all(plays$runs >= 0),
+  "Half-innings in innings 1-8 end with three outs (99.5%)" =
+    mean(used$outs[used$last_play & used$inning <= 8] == 3) > 0.995,
+  "Runners balance on at least 99.5% of plays" = mean(used$balanced) > 0.995,
+  "Each team's outcome counts match its official season totals" =
+    all(as.matrix(feed_counts[, -1]) == as.matrix(stat_counts[, -1])))
+knitr::kable(data.frame(check = names(play_checks), passed = play_checks), row.names = FALSE)
+stopifnot(all(play_checks))
+c(plays_unbalanced = sum(!used$balanced), pa_in_model = sum(used$is_pa & used$balanced))
+```
+
+## Nine Hitters per Team
+
+Scope section 3: nine hitters chosen by plate appearances, preferring at least 150 PA. Here, the nine with the most 2025 PA for the team, among hitters with at least 150 team PA and at least 100 MLB PA in 2023-2024. The second condition is needed because the batting orders are built from 2023-2024 statistics.
+
+Team PA are counted from the play-by-play above. The API's per-team player split leaves out hitters who finished the season elsewhere, such as Mike Yastrzemski's 372 PA for the Giants before his trade.
+
+```{r select-hitters}
+team_2025 <- plays %>% filter(is_pa, !is.na(team)) %>% count(team, batter_id, name = "pa") %>%
+  left_join(season_2025 %>% select(batter_id, player, season_pa = pa), by = "batter_id")
+# A substitute who finishes a two-strike count can shift a strikeout to the original batter, so allow a small gap.
+stopifnot(!anyNA(team_2025$player), all(team_2025$pa <= team_2025$season_pa + 2))
+
+prior_2324 <- pooled(2023:2024)
+candidates <- team_2025 %>% filter(pa >= 150) %>%
+  left_join(prior_2324 %>% select(batter_id, prior_pa = pa), by = "batter_id") %>%
+  mutate(prior_pa = coalesce(prior_pa, 0L)) %>%
+  group_by(team) %>% arrange(desc(pa), .by_group = TRUE) %>%
+  mutate(has_prior = prior_pa >= 100, selected = has_prior & cumsum(has_prior) <= 9) %>% ungroup()
+stopifnot(all(count(filter(candidates, selected), team)$n == 9))
+
+knitr::kable(candidates %>% group_by(team) %>%
+               summarise(hitters_150_pa = n(), selected = sum(selected), lowest_selected_pa = min(pa[selected])),
+             caption = "Hitters with at least 150 team PA in 2025")
+skipped <- candidates %>% group_by(team) %>% filter(!has_prior, pa > min(pa[selected])) %>% ungroup()
+knitr::kable(skipped %>% select(team, player, team_pa_2025 = pa, mlb_pa_2023_2024 = prior_pa),
+             caption = "Regulars skipped for lack of 2023-2024 data")
+```
+
+- Every team has at least 10 hitters with 150 PA, so no team is short of nine.
+- The only regular without 2023-2024 data is the Cubs' rookie Matt Shaw, so the Cubs' ninth hitter is the next one by PA. The sensitivity section checks the Cubs with Shaw instead.
+
+## Player Characteristics and 2025 Outcome Rates
+
+- **Characteristics** decide the batting order: OBP, SLG, and OPS from pooled 2023-2024 counts.
+- **Outcome rates** drive the simulation: each hitter's 2025 full-season rates of the seven outcomes, all teams combined for traded players.
+
+```{r hitter-table}
+make_hitters <- function(chars, picks = filter(candidates, selected)) {
+  picks %>% select(team, batter_id, player, team_pa = pa) %>% arrange(team, desc(team_pa)) %>%
+    left_join(chars %>% select(batter_id, obp, slg, ops), by = "batter_id")
+}
+rates_2025 <- function(ids) {
+  d <- season_2025[match(ids, season_2025$batter_id), ]
+  stopifnot(!anyNA(d$pa))
+  n <- outcome_counts(d)
+  list(counts = n, p = n / d$pa)
+}
+hitters <- make_hitters(prior_2324)
+stopifnot(!anyNA(hitters$ops))
+```
+
+## Batting Orders A and B
+
+Page-2 rules applied to each team's nine:
+
+- **Traditional (A):** slot 1 highest OBP; slot 2 next-highest OBP; slot 3 highest remaining OPS; slot 4 highest remaining SLG; slot 5 highest remaining OPS; slots 6-9 by OPS, high to low.
+- **OPS-ranked (B):** A's top five re-sorted by OPS; slots 6-9 same as A.
+
+Ties go to the hitter with more 2025 team PA.
+
+```{r lineup-rules, results='asis'}
+slot_metric <- c("obp", "obp", "ops", "slg", "ops", "ops", "ops", "ops", "ops")
+traditional_order <- function(d) {  # row numbers of d in batting order
+  remaining <- seq_len(nrow(d))
+  out <- integer(0)
+  for (j in 1:9) {
+    best <- remaining[which.max(d[[slot_metric[j]]][remaining])]
+    out <- c(out, best)
+    remaining <- setdiff(remaining, best)
+  }
+  out
+}
+ops_order <- function(d) {
+  a <- traditional_order(d)
+  c(a[1:5][order(-d$ops[a[1:5]])], a[6:9])  # order() is stable, so ties keep A's order
+}
+ops_all_order <- function(d) order(-d$ops)  # page-3 reading of B: all nine by OPS
+
+show_orders <- function(d) {
+  a <- traditional_order(d); b <- ops_order(d)
+  fmt <- function(i) sprintf("%s (%.3f/%.3f/%.3f)", d$player[i], d$obp[i], d$slg[i], d$ops[i])
+  data.frame(slot = 1:9, traditional_A = fmt(a), ops_ranked_B = fmt(b), same = a == b)
+}
+for (t in names(team_ids)) {
+  print(knitr::kable(show_orders(filter(hitters, team == t)),
+                     caption = paste(t, "- player (2023-24 OBP/SLG/OPS)")))
+  cat("\n\n")
+}
+```
+
+- A and B differ only inside the top five, and often share slots 1, 2, or 5.
+- For the Cubs and the Giants the two rules give the same order: their Traditional top five are already in OPS order, so B minus A is exactly zero. OBP and OPS rank hitters similarly, so the two rules often agree.
+
+## Base-Out Transitions
+
+For every plate appearance used, the base-out state before the play, the outcome, the state after, and the runs scored. One textbook-advancement pseudo-observation per cell keeps rare cells sensible.
+
+```{r transitions}
+# State index 1-24: outs * 8 + bases + 1, with bases a bitmask (1 = first, 2 = second, 4 = third); 25 = three outs.
+# Outcome of a transition: (next state, runs 0-4), stored as column (next - 1) * 5 + runs + 1.
+pa_rows <- used %>% filter(is_pa, balanced) %>%
+  mutate(from = pre_outs * 8L + pre_bases + 1L, to = ifelse(outs >= 3, 25L, outs * 8L + bases + 1L),
+         combo = (to - 1L) * 5L + pmin(runs, 4) + 1L)
+
+baseline <- function(s, k) {
+  o <- (s - 1) %/% 8; b <- (s - 1) %% 8
+  r1 <- b %% 2 == 1; r2 <- b %/% 2 %% 2 == 1; r3 <- b %/% 4 == 1
+  runs <- 0
+  if (k %in% c("K", "OUT")) o <- o + 1
+  if (k == "HR") { runs <- r1 + r2 + r3 + 1; b <- 0 }
+  if (k == "3B") { runs <- r1 + r2 + r3; b <- 4 }
+  if (k == "2B") { runs <- r2 + r3; b <- 2 + 4 * r1 }
+  if (k == "1B") { runs <- r3; b <- 1 + 2 * r1 + 4 * r2 }
+  if (k == "BB") { runs <- r1 & r2 & r3; b <- 1 + 2 * (r1 | r2) + 4 * (r3 | (r1 & r2)) }
+  if (o >= 3) 24 * 5 + 1 else (o * 8 + b) * 5 + runs + 1
+}
+
+trans_n <- array(0, c(7, 24, 125), dimnames = list(categories, NULL, NULL))
+tab <- pa_rows %>% count(category, from, combo)
+trans_n[cbind(match(tab$category, categories), tab$from, tab$combo)] <- tab$n
+trans_p <- trans_n
+for (k in seq_along(categories)) for (s in 1:24) {
+  c0 <- baseline(s, categories[k])
+  trans_p[k, s, c0] <- trans_p[k, s, c0] + 1
+  trans_p[k, s, ] <- trans_p[k, s, ] / sum(trans_p[k, s, ])
+}
+next_state <- rep(1:25, each = 5); combo_runs <- rep(0:4, times = 25)
+M <- lapply(seq_along(categories), function(k) t(rowsum(t(trans_p[k, , ]), next_state)))  # 24 x 25
+ER <- lapply(seq_along(categories), function(k) drop(trans_p[k, , ] %*% combo_runs))  # expected runs, 24
+cell_n <- apply(trans_n, c(1, 2), sum)
+c(cells = length(cell_n), cells_under_20 = sum(cell_n < 20), smallest_cell = min(cell_n))
+```
+
+```{r advancement-rates}
+# Familiar advancement rates, as a sanity check of the transition table.
+rate <- function(k, from_bases, out_set, ok) {
+  d <- filter(pa_rows, category == k, pre_bases == .env$from_bases, pre_outs %in% .env$out_set)
+  c(n = nrow(d), rate = round(mean(ok(d)), 3))
+}
+knitr::kable(rbind(
+  "Runner on 2nd scores on a single (<2 outs)" = rate("1B", 2, 0:1, function(d) d$runs >= 1),
+  "Runner on 1st reaches 3rd or scores on a single (<2 outs)" = rate("1B", 1, 0:1, function(d) d$bases >= 4 | d$runs >= 1),
+  "Runner on 1st scores on a double" = rate("2B", 1, 0:2, function(d) d$runs >= 1),
+  "Double play on an out in play, runner on 1st (0 outs)" = rate("OUT", 1, 0, function(d) d$outs - d$pre_outs >= 2),
+  "Runner on 3rd scores on an out in play (0-1 outs)" = rate("OUT", 4, 0:1, function(d) d$runs >= 1)))
+```
+
+# Simulation Model
+
+## Exact Expected Runs (Markov Chain)
+
+Each hitter's outcome rates mix the seven transition matrices into one 24-state chain. The half-inning starts with nobody on and nobody out and ends at three outs. The next inning starts with the hitter after the one who made the last out, so the lineup carries over between innings. Expected runs over nine innings follow exactly from the chain, with no simulation noise.
+
+```{r markov}
+batter_step <- function(p) list(T = Reduce(`+`, Map(`*`, p, M)), R = Reduce(`+`, Map(`*`, p, ER)))
+
+# Expected runs in a half-inning led off by slot `lead`, and where the next inning starts.
+inning_runs <- function(steps, lead) {
+  v <- c(1, numeric(23)); b <- lead; runs <- 0; nxt <- numeric(9)
+  while (sum(v) > 1e-12) {
+    runs <- runs + sum(v * steps[[b]]$R)
+    w <- drop(v %*% steps[[b]]$T)
+    b <- b %% 9 + 1
+    nxt[b] <- nxt[b] + w[25]
+    v <- w[1:24]
+  }
+  c(runs, nxt)
+}
+
+# Expected runs in nine innings for a 9 x 7 matrix of outcome rates in batting order.
+expected_runs <- function(p_mat) {
+  steps <- lapply(1:9, function(i) batter_step(p_mat[i, ]))
+  inn <- sapply(1:9, function(j) inning_runs(steps, j))
+  lead <- c(1, numeric(8)); total <- 0
+  for (t in 1:9) {
+    total <- total + sum(lead * inn[1, ])
+    lead <- drop(lead %*% t(inn[-1, ]))
+  }
+  total
+}
+```
+
+## Model Checks
+
+**Run expectancy.** Average runs from each base-out state to the end of the inning, for a hitter with the average 2025 outcome rates in these games, against the observed average. The observed values also include runs from steals, wild pitches, and pickoffs between plate appearances, which the model leaves out.
+
+```{r re24}
+avg_p <- as.numeric(table(factor(pa_rows$category, levels = categories)) / nrow(pa_rows))
+avg_step <- batter_step(avg_p)
+re_model <- solve(diag(24) - avg_step$T[, 1:24], avg_step$R)
+re_obs <- used %>% filter(is_pa, inning <= 8) %>% group_by(state = pre_outs * 8 + pre_bases + 1) %>%
+  summarise(observed = mean(runs_rest), n = n())
+bases_label <- c("---", "1--", "-2-", "12-", "--3", "1-3", "-23", "123")
+re_table <- data.frame(state = 1:24, model = re_model) %>% left_join(re_obs, by = "state") %>%
+  mutate(outs = (state - 1) %/% 8, bases = bases_label[(state - 1) %% 8 + 1])
+knitr::kable(re_table %>% select(bases, outs, model, observed) %>%
+               pivot_wider(names_from = outs, values_from = c(model, observed)) %>%
+               select(bases, model_0, observed_0, model_1, observed_1, model_2, observed_2),
+             digits = 3, caption = "Run expectancy by state: model vs observed (2025)")
+c(max_abs_diff = max(abs(re_table$model - re_table$observed)), start_model = re_model[1],
+  start_observed = re_table$observed[1])
+```
+
+**Team scoring.** Runs per inning (innings 1-8) for each team's 2025 offense, against the model fed nine copies of the team's overall 2025 outcome rates.
+
+```{r team-calibration}
+team_obs <- plays %>% filter(inning <= 8, !is.na(team)) %>% group_by(team) %>%
+  summarise(observed = sum(runs) / n_distinct(paste(game_id, inning)))
+team_p <- outcome_counts(team_totals) / team_totals$pa
+calibration <- data.frame(team = team_totals$team, team_average_hitters = sapply(seq_len(nrow(team_p)), function(i)
+  expected_runs(matrix(team_p[i, ], 9, 7, byrow = TRUE)) / 9)) %>% left_join(team_obs, by = "team")
+```
+
+# Results
+
+## Expected Runs Under A and B
+
+```{r results}
+run_team <- function(d, b_rule = ops_order) {
+  r <- rates_2025(d$batter_id)
+  a <- traditional_order(d); b <- b_rule(d)
+  list(team = d$team[1], counts = r$counts, p = r$p, a = a, b = b,
+       runs_a = expected_runs(r$p[a, ]), runs_b = expected_runs(r$p[b, ]))
+}
+main <- lapply(names(team_ids), function(t) run_team(filter(hitters, team == t)))
+results <- bind_rows(lapply(main, function(r) data.frame(
+  team = r$team, slots_moved = sum(r$a != r$b), runs_per_game_A = r$runs_a, runs_per_game_B = r$runs_b,
+  B_minus_A = r$runs_b - r$runs_a, B_minus_A_per_162 = 162 * (r$runs_b - r$runs_a))))
+
+calibration <- calibration %>% left_join(results %>% transmute(team, selected_nine_A = runs_per_game_A / 9), by = "team")
+knitr::kable(calibration %>% select(team, observed, team_average_hitters, selected_nine_A), digits = 3,
+             caption = "Runs per inning: observed 2025 vs model")
+```
+
+- With team-average hitters the model runs `r sprintf("%.3f-%.3f", min(calibration$observed - calibration$team_average_hitters), max(calibration$observed - calibration$team_average_hitters))` runs per inning below the observed rate. Most of the gap is steals and other baserunning between plate appearances, which the model leaves out; A and B share the gap.
+- The selected nine score more than the team average because bench players are left out.
+
+## Uncertainty from 2025 Player Rates
+
+Each hitter's 2025 rates are estimates from a few hundred plate appearances. A parametric bootstrap redraws each hitter's 2025 outcome counts from a multinomial with his observed rates and recomputes B minus A. The batting orders stay fixed, because they were set from 2023-2024 data.
+
+```{r bootstrap}
+set.seed(534)
+n_boot <- 1000
+boot <- bind_rows(lapply(main, function(r) {
+  pa <- rowSums(r$counts)
+  diffs <- replicate(n_boot, {
+    p_star <- t(sapply(seq_along(pa), function(i) rmultinom(1, pa[i], r$p[i, ]) / pa[i]))
+    expected_runs(p_star[r$b, ]) - expected_runs(p_star[r$a, ])
+  })
+  data.frame(team = r$team, ci_low = unname(quantile(diffs, 0.025)), ci_high = unname(quantile(diffs, 0.975)),
+             share_B_better = mean(diffs > 0))
+}))
+results <- results %>% left_join(boot, by = "team")
+knitr::kable(results, digits = 4, caption = "Expected runs per nine innings; B minus A with 95% bootstrap interval")
+write.csv(results, "processed/simulation_results_2025.csv", row.names = FALSE)
+```
+
+```{r results-plot, fig.width=7, fig.height=3.2}
+par(mar = c(4, 7, 2, 1))
+y <- rev(seq_len(nrow(results)))
+plot(results$B_minus_A, y, xlim = range(c(results$ci_low, results$ci_high, 0)), yaxt = "n", pch = 19,
+     col = "#2a78d6", xlab = "B minus A, runs per nine innings", ylab = "", main = "OPS-ranked (B) minus Traditional (A)")
+segments(results$ci_low, y, results$ci_high, y, col = "#2a78d6", lwd = 2)
+abline(v = 0, col = "#9a9a9a", lty = 2)
+axis(2, at = y, labels = results$team, las = 1)
+```
+
+## Monte Carlo Check
+
+The same model, simulated game by game: 100,000 nine-inning games per order and team. This checks the exact calculation and shows the spread of runs. The scope's t-test is run on simulated game totals. With this many simulated games its p-value mostly reflects how many games were simulated, so the size of the difference matters more than the p-value.
+
+```{r monte-carlo}
+flat_p <- do.call(rbind, lapply(seq_along(categories), function(k) trans_p[k, , ]))  # row (k - 1) * 24 + state
+
+simulate_games <- function(p_mat, n_games) {
+  cum_p <- t(apply(p_mat, 1, cumsum)); cum_p[, 7] <- 1
+  runs <- matrix(0L, n_games, 9)
+  lead <- rep(1L, n_games)
+  for (inn in 1:9) {
+    s <- rep(1L, n_games); b <- lead; active <- seq_len(n_games)
+    while (length(active) > 0) {
+      k <- 1L + rowSums(runif(length(active)) > cum_p[b[active], , drop = FALSE])
+      row <- (k - 1L) * 24L + s[active]
+      combo <- integer(length(active))
+      groups <- split(seq_along(row), row)
+      for (r in names(groups)) {
+        j <- groups[[r]]
+        combo[j] <- sample.int(125L, length(j), replace = TRUE, prob = flat_p[as.integer(r), ])
+      }
+      runs[active, inn] <- runs[active, inn] + (combo - 1L) %% 5L
+      b[active] <- b[active] %% 9L + 1L
+      s[active] <- (combo - 1L) %/% 5L + 1L
+      active <- active[s[active] != 25L]
+    }
+    lead <- b
+  }
+  runs
+}
+
+set.seed(2025)
+n_games <- 100000
+mc <- bind_rows(lapply(main, function(r) {
+  ga <- rowSums(simulate_games(r$p[r$a, ], n_games))
+  gb <- rowSums(simulate_games(r$p[r$b, ], n_games))
+  data.frame(team = r$team, exact_A = r$runs_a, mc_A = mean(ga), exact_B = r$runs_b, mc_B = mean(gb),
+             mc_se = sd(ga) / sqrt(n_games), mc_B_minus_A = mean(gb) - mean(ga),
+             welch_p = t.test(gb, ga)$p.value, shutout_A = mean(ga == 0), shutout_B = mean(gb == 0))
+}))
+knitr::kable(mc, digits = 4, caption = "Exact vs Monte Carlo runs per nine innings")
+stopifnot(all(abs(mc$mc_A - mc$exact_A) < 4 * mc$mc_se), all(abs(mc$mc_B - mc$exact_B) < 4 * mc$mc_se))
+```
+
+- Every Monte Carlo mean is within `r sprintf("%.1f", max(abs(c(mc$mc_A - mc$exact_A, mc$mc_B - mc$exact_B)) / mc$mc_se))` standard errors of the exact value.
+- The Cubs and Giants simulate the same order twice, yet the simulated "difference" is up to `r sprintf("%.3f", max(abs(mc$mc_B_minus_A[mc$team %in% c("Cubs", "Giants")])))` runs with p = `r sprintf("%.2f", min(mc$welch_p[mc$team %in% c("Cubs", "Giants")]))`. A t-test on simulated runs measures simulation noise, not a lineup effect.
+
+## How Much Can Order Matter?
+
+To show the model does respond to batting order, the same nine hitters sorted by their 2025 OPS from high to low and from low to high. The last column repeats the gap with 2023-24 OPS, the information the orders A and B were built from.
+
+```{r order-scale}
+order_scale <- bind_rows(lapply(names(team_ids), function(t) {
+  d <- filter(hitters, team == t)
+  r <- rates_2025(d$batter_id)
+  ops_2025 <- add_rates(season_2025[match(d$batter_id, season_2025$batter_id), ])$ops
+  best <- order(-ops_2025); prior_best <- order(-d$ops)
+  data.frame(team = t, high_to_low = expected_runs(r$p[best, ]), low_to_high = expected_runs(r$p[rev(best), ]),
+             gap_with_2023_24_ops = expected_runs(r$p[prior_best, ]) - expected_runs(r$p[rev(prior_best), ]))
+})) %>% mutate(gap = high_to_low - low_to_high, gap_per_162 = 162 * gap) %>%
+  select(team, high_to_low, low_to_high, gap, gap_per_162, gap_with_2023_24_ops)
+knitr::kable(order_scale, digits = 3, caption = "Runs per nine innings, best-first vs worst-first by 2025 OPS")
+```
+
+- Reversing the order costs `r sprintf("%.2f-%.2f", min(order_scale$gap), max(order_scale$gap))` runs per game, about `r round(min(order_scale$gap_per_162))`-`r round(max(order_scale$gap_per_162))` runs over a season, so the model does detect order effects. A and B are too close to each other to matter.
+- Sorted by 2023-24 OPS, the gap shrinks, and for the `r paste(order_scale$team[order_scale$gap_with_2023_24_ops < 0], collapse = " and ")` the reversed order even scores more, because some hitters' 2025 seasons differed sharply from their 2023-24 seasons. How well earlier seasons predict this one matters more than A versus B.
+
+## Why A and B Are So Close
+
+Moving a hitter changes runs mainly by changing how often he bats. Each hitter is valued in runs above an average plate appearance, using run values for each outcome from the model's run expectancy.
+
+```{r why-close}
+# Expected plate appearances per batting slot in a nine-inning game.
+pa_by_slot <- function(p_mat) {
+  steps <- lapply(1:9, function(i) batter_step(p_mat[i, ]))
+  inn <- lapply(1:9, function(j) {
+    v <- c(1, numeric(23)); b <- j; pa <- numeric(9); nxt <- numeric(9)
+    while (sum(v) > 1e-12) {
+      pa[b] <- pa[b] + sum(v)
+      w <- drop(v %*% steps[[b]]$T)
+      b <- b %% 9 + 1
+      nxt[b] <- nxt[b] + w[25]
+      v <- w[1:24]
+    }
+    list(pa = pa, nxt = nxt)
+  })
+  L <- t(sapply(inn, `[[`, "nxt")); P <- t(sapply(inn, `[[`, "pa"))
+  lead <- c(1, numeric(8)); total <- numeric(9)
+  for (t in 1:9) { total <- total + drop(lead %*% P); lead <- drop(lead %*% L) }
+  total
+}
+
+# Run value of each outcome: change in run expectancy plus runs scored, averaged over the states where PAs happen.
+state_freq <- tabulate(pa_rows$from, 24) / nrow(pa_rows)
+run_values <- setNames(sapply(seq_along(categories), function(k)
+  sum(state_freq * (drop(M[[k]] %*% c(re_model, 0)) + ER[[k]] - re_model))), categories)
+knitr::kable(t(round(run_values, 3)), caption = "Run value of each outcome, relative to an average plate appearance")
+
+slot_pa <- t(sapply(main, function(r) pa_by_slot(r$p[r$a, ])))
+dimnames(slot_pa) <- list(sapply(main, `[[`, "team"), paste("slot", 1:9))
+knitr::kable(slot_pa, digits = 2, caption = "Plate appearances per game by slot (order A)")
+
+moves <- bind_rows(lapply(main, function(r) {
+  slot_a <- match(seq_len(9), r$a); slot_b <- match(seq_len(9), r$b)
+  moved <- which(slot_a != slot_b)
+  if (length(moved) == 0) return(NULL)
+  d <- filter(hitters, team == r$team)
+  ops_2025 <- add_rates(season_2025[match(d$batter_id, season_2025$batter_id), ])$ops
+  pa_a <- pa_by_slot(r$p[r$a, ])
+  data.frame(team = r$team, player = d$player[moved], slot_A = slot_a[moved], slot_B = slot_b[moved],
+             ops_2023_24 = d$ops[moved], ops_2025 = ops_2025[moved],
+             runs_above_avg_per_PA = drop(r$p %*% run_values)[moved],
+             PA_change_per_game = pa_a[slot_b[moved]] - pa_a[slot_a[moved]]) %>%
+    mutate(runs_per_game = runs_above_avg_per_PA * PA_change_per_game)
+}))
+knitr::kable(moves, digits = 3, caption = "Hitters who change slots between A and B")
+pa_effect <- moves %>% group_by(team) %>% summarise(PA_effect = sum(runs_per_game)) %>%
+  left_join(results %>% select(team, exact_B_minus_A = B_minus_A), by = "team") %>%
+  mutate(sequencing_effect = exact_B_minus_A - PA_effect)
+knitr::kable(pa_effect, digits = 4, caption = "B minus A split into plate appearances and sequencing (runs per game)")
+```
+
+- Each slot down the order bats about `r sprintf("%.2f", mean(-diff(colMeans(slot_pa))))` fewer times per game, about `r round(162 * mean(-diff(colMeans(slot_pa))))` plate appearances over a season.
+- A gap between two hitters is worth little when it moves only 0.11 PA. The Dodgers' B moves Freeman from 2nd to 3rd and Betts from 3rd to 2nd. In 2025 Freeman was `r with(filter(moves, team == "Dodgers"), sprintf("%.3f", runs_above_avg_per_PA[player == "Freddie Freeman"] - runs_above_avg_per_PA[player == "Mookie Betts"]))` runs per PA better than Betts, so the swap costs about 0.11 × that gap = `r sprintf("%.4f", -pa_effect$PA_effect[pa_effect$team == "Dodgers"])` runs per game, most of the exact `r sprintf("%.4f", -pa_effect$exact_B_minus_A[pa_effect$team == "Dodgers"])`.
+- The rest is sequencing: who bats ahead of whom, for example a high-OBP hitter in front of a power hitter. For the Cardinals and Angels it runs against the plate-appearance effect and is about as large, so the net difference is again near zero.
+- B is slightly behind in 2025 because it moved up hitters whose 2023-24 OPS was higher but whose 2025 season was weaker, such as Betts and Soler.
+- The scope's Traditional rule already bats the highest-OBP hitter first, which is close to what analysts recommend. It is not the old-style lineup with a fast, low-OBP leadoff hitter and the best hitter third, so B has little left to improve.
+
+## Sensitivity
+
+Each row changes one choice and reports B minus A in runs per nine innings.
+
+```{r sensitivity}
+c24 <- league %>% filter(season == 2024, pa >= 100) %>% add_rates()
+chars_2024 <- bind_rows(c24, prior_2324 %>% filter(!batter_id %in% c24$batter_id))
+chars_2025 <- season_2025 %>% add_rates()
+cubs_with_shaw <- candidates %>% filter(team == "Cubs") %>% slice_head(n = 9)
+shaw_chars <- bind_rows(prior_2324, chars_2025 %>% filter(!batter_id %in% prior_2324$batter_id))
+
+scenario <- function(name, chars, b_rule = ops_order, teams = names(team_ids), picks = filter(candidates, selected)) {
+  h <- make_hitters(chars, picks)
+  bind_rows(lapply(teams, function(t) {
+    r <- run_team(filter(h, team == t), b_rule)
+    data.frame(scenario = name, team = t, B_minus_A = r$runs_b - r$runs_a)
+  }))
+}
+sensitivity <- bind_rows(
+  scenario("Main: 2023-24 characteristics", prior_2324),
+  scenario("2024 characteristics (2023-24 if under 100 PA)", chars_2024),
+  scenario("2025 characteristics (hindsight)", chars_2025),
+  scenario("B = all nine by OPS (page-3 table)", prior_2324, ops_all_order),
+  scenario("Cubs with Matt Shaw (his 2025 stats)", shaw_chars, teams = "Cubs", picks = cubs_with_shaw))
+knitr::kable(sensitivity %>% pivot_wider(names_from = team, values_from = B_minus_A), digits = 4)
+```
+
+- The largest B minus A in any scenario is `r sprintf("%.3f", max(abs(sensitivity$B_minus_A)))` runs per game in absolute value, and the sign changes across scenarios for several teams.
+
+```{r save-outputs}
+lineup_out <- bind_rows(lapply(main, function(r) {
+  d <- filter(hitters, team == r$team)
+  data.frame(d, r$p, slot_A = match(seq_len(9), r$a), slot_B = match(seq_len(9), r$b), check.names = FALSE)
+}))
+write.csv(lineup_out, "processed/simulation_lineups_2025.csv", row.names = FALSE)
+write.csv(tab %>% mutate(next_state = (combo - 1) %/% 5 + 1, runs = (combo - 1) %% 5) %>% select(-combo),
+          "processed/simulation_transitions_2025.csv", row.names = FALSE)
+```
+
+# Conclusion
+
+```{r conclusion-numbers, include=FALSE}
+moved <- results %>% filter(slots_moved > 0)
+```
+
+- With the same nine hitters, the OPS-ranked order (B) and the Traditional order (A) produce practically the same expected runs.
+  - The Cubs and Giants get identical orders from the two rules.
+  - For the Dodgers, Cardinals, and Angels, B minus A is `r sprintf("%.4f", min(moved$B_minus_A))` to `r sprintf("%.4f", max(moved$B_minus_A))` runs per game, or `r sprintf("%.1f", min(moved$B_minus_A_per_162))` to `r sprintf("%.1f", max(moved$B_minus_A_per_162))` runs over 162 games. Every 95% interval includes zero.
+- No sensitivity check changes this: the largest absolute difference in any scenario is `r sprintf("%.3f", max(abs(sensitivity$B_minus_A)))` runs per game.
+- The model does respond to order: reversing a lineup sorted by 2025 OPS costs `r sprintf("%.2f-%.2f", min(order_scale$gap), max(order_scale$gap))` runs per game. Moving two to four hitters within the top five is too small a change to matter.
+- Building orders from earlier seasons adds its own error: some hitters' 2025 form was far from their 2023-24 numbers.
+- The answer to the research question is that neither order produces meaningfully more runs per inning. Who is in the lineup matters far more than which of these two orders is used.
+
+**Limitations.** Same baserunning for every hitter and team. Steals, pickoffs, and wild pitches between plate appearances are left out. Opposing pitchers are not modeled. Nine full innings are played every game. These affect A and B in the same way, so they matter much less for the difference than for the run totals.
+
+**Next step: 2026 validation.** The 2026 regular season is complete: all 162 games per team are final in the MLB Stats API and in the play-by-play workbook.
+
+1. Build the orders from 2024-2025 characteristics and simulate with 2026 outcome rates, keeping the 2025 transition model. Check whether B minus A stays near zero.
+2. Out-of-sample calibration: use the 2025 transition model with each team's 2026 rates to predict 2026 runs per inning, and compare with the observed values.
+
+# Session Information
+
+```{r session-info}
+sessionInfo()
+```
