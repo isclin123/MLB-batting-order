@@ -8,5 +8,11 @@
 .RData
 .Rproj.user/
 
-# Cached MLB Stats API responses; the Rmd re-downloads them on Knit
-source_cache/
+# Raw game feeds from the MLB Stats API (about 50 MB). The parsed plays
+# (source_cache/plays_*.rds) and the other API responses are tracked,
+# so a Knit of a fresh clone runs offline.
+source_cache/api/games/
+*.part
+
+# Local bundles prepared for sharing
+share/

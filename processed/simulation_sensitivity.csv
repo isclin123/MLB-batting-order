@@ -1,0 +1,101 @@
+"scenario","season","team","slots_moved","runs_A","B_minus_A"
+"Main: previous-season characteristics",2023,"Dodgers",2,5.79924412314638,0.00235564857813486
+"Main: previous-season characteristics",2023,"Cubs",2,5.36088932066483,-0.00634132957702516
+"Main: previous-season characteristics",2023,"Cardinals",4,5.22930394285463,-0.00515110308926836
+"Main: previous-season characteristics",2023,"Angels",2,5.35481578009649,0.00392706839858281
+"Main: previous-season characteristics",2023,"Giants",3,4.6549724610443,0.0033925739307108
+"Main: previous-season characteristics",2024,"Dodgers",2,5.73713925994319,-0.00214373283327518
+"Main: previous-season characteristics",2024,"Cubs",5,4.61836024275067,-0.00304421578118053
+"Main: previous-season characteristics",2024,"Cardinals",5,4.57272680671003,0.00867220244956002
+"Main: previous-season characteristics",2024,"Angels",5,4.03841815875662,0.00827796375382572
+"Main: previous-season characteristics",2024,"Giants",3,4.18799861488764,0.00044106082012263
+"Main: previous-season characteristics",2025,"Dodgers",4,5.46638536743263,-0.00547274909321604
+"Main: previous-season characteristics",2025,"Cubs",0,5.01907555693296,0
+"Main: previous-season characteristics",2025,"Cardinals",2,4.57453886410093,-0.00377110765207256
+"Main: previous-season characteristics",2025,"Angels",4,4.64003875399083,0.00847348867670927
+"Main: previous-season characteristics",2025,"Giants",2,4.49325806006205,0.00348377317118498
+"Main: previous-season characteristics",2026,"Dodgers",2,5.55002637394795,-0.00119881225579999
+"Main: previous-season characteristics",2026,"Cubs",4,5.39641644097708,0.0202988960939718
+"Main: previous-season characteristics",2026,"Cardinals",2,3.90021327390663,0.00097037542342493
+"Main: previous-season characteristics",2026,"Angels",3,4.14760334314528,-0.00273773957783696
+"Main: previous-season characteristics",2026,"Giants",0,4.60343281074391,0
+"Same-season characteristics (hindsight, as in the PM's notebook)",2023,"Dodgers",4,5.81201542882349,0.00338942766287342
+"Same-season characteristics (hindsight, as in the PM's notebook)",2023,"Cubs",5,5.38890959061294,-0.0179327794535684
+"Same-season characteristics (hindsight, as in the PM's notebook)",2023,"Cardinals",5,5.24711940875371,-0.000125567038592678
+"Same-season characteristics (hindsight, as in the PM's notebook)",2023,"Angels",0,5.37412504193475,0
+"Same-season characteristics (hindsight, as in the PM's notebook)",2023,"Giants",2,4.71652473094041,-0.00627779338558287
+"Same-season characteristics (hindsight, as in the PM's notebook)",2024,"Dodgers",4,5.74690813702144,0.000458595313621579
+"Same-season characteristics (hindsight, as in the PM's notebook)",2024,"Cubs",4,4.62624324514276,-0.00856314939901548
+"Same-season characteristics (hindsight, as in the PM's notebook)",2024,"Cardinals",0,4.61235115234872,0
+"Same-season characteristics (hindsight, as in the PM's notebook)",2024,"Angels",4,4.11148479891296,-0.00842137307403235
+"Same-season characteristics (hindsight, as in the PM's notebook)",2024,"Giants",2,4.23221289873399,-0.0192934305921248
+"Same-season characteristics (hindsight, as in the PM's notebook)",2025,"Dodgers",2,5.55162422977899,-0.0139201667253284
+"Same-season characteristics (hindsight, as in the PM's notebook)",2025,"Cubs",4,5.03982901493993,0.00547988638296992
+"Same-season characteristics (hindsight, as in the PM's notebook)",2025,"Cardinals",3,4.56521481552585,0.00150601304862619
+"Same-season characteristics (hindsight, as in the PM's notebook)",2025,"Angels",3,4.69192959913709,0.000268969616290526
+"Same-season characteristics (hindsight, as in the PM's notebook)",2025,"Giants",2,4.51134976335091,0.0022164928643722
+"Same-season characteristics (hindsight, as in the PM's notebook)",2026,"Dodgers",3,5.56395770479038,-0.00161283373696719
+"Same-season characteristics (hindsight, as in the PM's notebook)",2026,"Cubs",0,5.42735103504738,0
+"Same-season characteristics (hindsight, as in the PM's notebook)",2026,"Cardinals",3,3.96778265642447,-0.018975026977984
+"Same-season characteristics (hindsight, as in the PM's notebook)",2026,"Angels",2,4.16104650127813,0.00260743368941352
+"Same-season characteristics (hindsight, as in the PM's notebook)",2026,"Giants",5,4.61137342806867,-0.0229347927603918
+"Two prior seasons pooled",2023,"Dodgers",2,5.80239050042365,0.00264240803133564
+"Two prior seasons pooled",2023,"Cubs",3,5.34019083598405,0.0114457948164546
+"Two prior seasons pooled",2023,"Cardinals",5,5.2234678149636,0.000159927509537638
+"Two prior seasons pooled",2023,"Angels",0,5.35438040503281,0
+"Two prior seasons pooled",2023,"Giants",5,4.63302633730142,0.0122112562081496
+"Two prior seasons pooled",2024,"Dodgers",4,5.75632581301953,-0.0157299029603264
+"Two prior seasons pooled",2024,"Cubs",4,4.61387073598825,-0.00497449220424073
+"Two prior seasons pooled",2024,"Cardinals",4,4.55641456085301,-7.35934062294774e-05
+"Two prior seasons pooled",2024,"Angels",4,4.05720237349581,-0.00424209152163879
+"Two prior seasons pooled",2024,"Giants",5,4.21001762765177,-0.00783755976188782
+"Two prior seasons pooled",2025,"Dodgers",2,5.46740862185847,-0.00649600351905821
+"Two prior seasons pooled",2025,"Cubs",0,5.00475780226997,0
+"Two prior seasons pooled",2025,"Cardinals",4,4.54528975810031,-0.00181182079630204
+"Two prior seasons pooled",2025,"Angels",3,4.62300605848127,-0.00259051781534314
+"Two prior seasons pooled",2025,"Giants",0,4.49450303823094,0
+"Two prior seasons pooled",2026,"Dodgers",0,5.54168294665014,0
+"Two prior seasons pooled",2026,"Cubs",3,5.41100357573908,-0.00339551522999493
+"Two prior seasons pooled",2026,"Cardinals",2,3.92250231287049,-0.0109129375214629
+"Two prior seasons pooled",2026,"Angels",3,4.14350163628266,-0.00761012593433463
+"Two prior seasons pooled",2026,"Giants",4,4.5947263755001,0.0117647823073064
+"B = all nine by OPS (page-3 table)",2023,"Dodgers",2,5.79924412314638,0.00235564857813486
+"B = all nine by OPS (page-3 table)",2023,"Cubs",2,5.36088932066483,-0.00634132957702516
+"B = all nine by OPS (page-3 table)",2023,"Cardinals",4,5.22930394285463,-0.00515110308926836
+"B = all nine by OPS (page-3 table)",2023,"Angels",2,5.35481578009649,0.00392706839858281
+"B = all nine by OPS (page-3 table)",2023,"Giants",3,4.6549724610443,0.0033925739307108
+"B = all nine by OPS (page-3 table)",2024,"Dodgers",2,5.73713925994319,-0.00214373283327518
+"B = all nine by OPS (page-3 table)",2024,"Cubs",6,4.61836024275067,-0.0202386678740654
+"B = all nine by OPS (page-3 table)",2024,"Cardinals",6,4.57272680671003,-0.0010328612632744
+"B = all nine by OPS (page-3 table)",2024,"Angels",6,4.03841815875662,0.00702116597997104
+"B = all nine by OPS (page-3 table)",2024,"Giants",3,4.18799861488764,0.00044106082012263
+"B = all nine by OPS (page-3 table)",2025,"Dodgers",4,5.46638536743263,-0.00547274909321604
+"B = all nine by OPS (page-3 table)",2025,"Cubs",0,5.01907555693296,0
+"B = all nine by OPS (page-3 table)",2025,"Cardinals",2,4.57453886410093,-0.00377110765207256
+"B = all nine by OPS (page-3 table)",2025,"Angels",7,4.64003875399083,-0.00028378894971226
+"B = all nine by OPS (page-3 table)",2025,"Giants",2,4.49325806006205,0.00348377317118498
+"B = all nine by OPS (page-3 table)",2026,"Dodgers",2,5.55002637394795,-0.00119881225579999
+"B = all nine by OPS (page-3 table)",2026,"Cubs",6,5.39641644097708,0.0181428398883909
+"B = all nine by OPS (page-3 table)",2026,"Cardinals",2,3.90021327390663,0.00097037542342493
+"B = all nine by OPS (page-3 table)",2026,"Angels",3,4.14760334314528,-0.00273773957783696
+"B = all nine by OPS (page-3 table)",2026,"Giants",0,4.60343281074391,0
+"Fixed base-running rules from the PM's notebook",2023,"Dodgers",2,5.64729494627428,0.00236301345893875
+"Fixed base-running rules from the PM's notebook",2023,"Cubs",2,5.20943762271818,-0.0054233477772323
+"Fixed base-running rules from the PM's notebook",2023,"Cardinals",4,5.07649057364426,8.07968941405335e-05
+"Fixed base-running rules from the PM's notebook",2023,"Angels",2,5.21046408807772,-0.00398257571424754
+"Fixed base-running rules from the PM's notebook",2023,"Giants",3,4.47367800537511,0.000546162805430406
+"Fixed base-running rules from the PM's notebook",2024,"Dodgers",2,5.548317891378,-0.00456895628758414
+"Fixed base-running rules from the PM's notebook",2024,"Cubs",5,4.38416361285818,-0.00812473467650143
+"Fixed base-running rules from the PM's notebook",2024,"Cardinals",5,4.34467716959693,-0.00168786883015937
+"Fixed base-running rules from the PM's notebook",2024,"Angels",5,3.80314898528619,0.00546731828138824
+"Fixed base-running rules from the PM's notebook",2024,"Giants",3,3.91334897837632,0.00210827231691235
+"Fixed base-running rules from the PM's notebook",2025,"Dodgers",4,5.33019502062865,0.00179897680492136
+"Fixed base-running rules from the PM's notebook",2025,"Cubs",0,4.84100572767781,0
+"Fixed base-running rules from the PM's notebook",2025,"Cardinals",2,4.35926090905424,-0.000172934305956218
+"Fixed base-running rules from the PM's notebook",2025,"Angels",4,4.49013349008649,0.00769448022927843
+"Fixed base-running rules from the PM's notebook",2025,"Giants",2,4.30263053198195,0.0044512504192431
+"Fixed base-running rules from the PM's notebook",2026,"Dodgers",2,5.36556862277049,-0.000268100967732998
+"Fixed base-running rules from the PM's notebook",2026,"Cubs",4,5.2004558222357,0.0156729164096792
+"Fixed base-running rules from the PM's notebook",2026,"Cardinals",2,3.64033653613903,-0.00436081957015944
+"Fixed base-running rules from the PM's notebook",2026,"Angels",3,3.91500000889919,-0.0158254509949423
+"Fixed base-running rules from the PM's notebook",2026,"Giants",0,4.35739521008371,0
