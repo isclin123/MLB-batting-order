@@ -31,6 +31,7 @@ Math 534 course project. With the same nine hitters, does a Traditional batting 
 | `source_cache/` | Cached MLB Stats API data, so the simulation Knits offline |
 | `*.xlsx` | Original supplied workbooks (never modified); the simulation reads them only to check them |
 | `Monte_Carlo_Baseball.ipynb` | The PM's sample notebook (Dodgers 2025); it runs on the two clean tables with `pd.read_csv` |
+| `old_school_lineup.txt` | Slot roles of an old-school batting order, a possible third comparison |
 | `lineup_classification_plan_zh.md` | Classification and study design plan (Chinese) |
 | `*.pdf` | Project scope documents |
 
